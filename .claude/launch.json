@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ghimby",
+      "runtimeExecutable": "sh",
+      "runtimeArgs": ["-c", "PATH=\"$HOME/.cargo/bin:$PATH\" exec cargo run -- --db ghimby.db"],
+      "port": 7878
+    }
+  ]
+}
