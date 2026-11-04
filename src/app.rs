@@ -79,6 +79,16 @@ impl App {
         }
     }
 
+    /// Clears every source's synced data and starts a fresh sync.
+    pub fn reset_sync(&self) -> Result<()> {
+        for src in &self.sources {
+            src.reset_sync()?;
+        }
+        self.rebuild_items()?;
+        self.kick.notify_one();
+        Ok(())
+    }
+
     pub async fn sync_loop(self: Arc<Self>) {
         loop {
             self.sync_once().await;

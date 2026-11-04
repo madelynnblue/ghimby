@@ -6,7 +6,7 @@ use anyhow::{Context, Result, anyhow, bail};
 use chrono::DateTime;
 use futures::future::BoxFuture;
 use futures::{FutureExt, StreamExt};
-use reqwest::header::{HeaderMap, HeaderValue};
+use reqwest::header::HeaderMap;
 use serde_json::{Value as J, json};
 
 use super::{Source, Status, set_message};
@@ -40,6 +40,7 @@ pub const FIELDS: &[FieldDoc] = &[
     FieldDoc { name: "deletions", help: "int" },
     FieldDoc { name: "requested_users", help: "Logins with a pending review request (lowercase)" },
     FieldDoc { name: "requested_teams", help: "org/team slugs with a pending review request (lowercase)" },
+    FieldDoc { name: "requested_for_me", help: "A review is currently requested from you by name (not via a team)" },
     FieldDoc { name: "reviewed_by_me", help: "You have submitted a review" },
     FieldDoc {
         name: "new_since_my_review",
@@ -189,28 +190,23 @@ impl GitHub {
     }
 
     /// Updates the stored notification list. Returns false if nothing changed.
-    async fn sync_notifications(&self, token: &str) -> Result<bool> {
-        let mut h = HeaderMap::new();
-        let lm = self.store.setting("github.notifications_last_modified")?;
-        if !lm.is_empty() {
-            h.insert("if-modified-since", HeaderValue::from_str(&lm)?);
-        }
-        let first = format!("{API}/notifications?all=false&per_page=50");
-        let resp = self.get(token, &first, h).await?;
-        if resp.status() == reqwest::StatusCode::NOT_MODIFIED {
-            return Ok(false);
-        }
-        let new_lm = resp
-            .headers()
-            .get("last-modified")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        let next = next_link(resp.headers());
-        let mut all: Vec<J> = resp.json().await?;
-        if let Some(next) = next {
-            all.extend(self.get_all(token, &next).await?);
-        }
+    /// Merges notifications updated since the last sync (or the last `sync_days` days on the first
+    /// sync), then drops ones older than that window.
+    async fn sync_notifications(&self, token: &str) -> Result<()> {
+        let days = self.store.setting_i64("sync_days")?.max(1);
+        let started = chrono::Utc::now();
+        let window_start = started - chrono::Duration::days(days);
+        let cursor = self.store.setting("github.notifications_since")?;
+        // Overlap the previous sync slightly so nothing updated mid-request is missed.
+        let since = DateTime::parse_from_rfc3339(&cursor)
+            .map(|c| c.to_utc() - chrono::Duration::minutes(1))
+            .unwrap_or(window_start)
+            .max(window_start);
+        let first = format!(
+            "{API}/notifications?all=true&per_page=50&since={}",
+            since.format("%Y-%m-%dT%H:%M:%SZ")
+        );
+        let all = self.get_all(token, &first).await?;
         let rows: Vec<(String, String, i64)> = all
             .iter()
             .map(|n| {
@@ -221,10 +217,11 @@ impl GitHub {
                 )
             })
             .collect();
-        self.store.replace_notifications(&rows)?;
+        self.store.upsert_notifications(&rows)?;
+        self.store.prune_notifications(window_start.timestamp())?;
         self.store
-            .set_setting("github.notifications_last_modified", &new_lm)?;
-        Ok(true)
+            .set_setting("github.notifications_since", &started.to_rfc3339())?;
+        Ok(())
     }
 
     async fn sync_identity(&self, token: &str) -> Result<()> {
@@ -462,6 +459,11 @@ impl Source for GitHub {
         self.run_sync(status).boxed()
     }
 
+    fn reset_sync(&self) -> Result<()> {
+        self.store.clear_notifications()?;
+        self.store.set_setting("github.notifications_since", "")
+    }
+
     fn items(&self) -> Result<Vec<Item>> {
         let me = self.store.setting("github.login")?;
         let teams: Vec<String> =
@@ -554,6 +556,7 @@ impl Source for GitHub {
                             rteams.push(normalize_owner(t));
                         }
                     }
+                    it.set("requested_for_me", Value::Bool(users.contains(&me)));
                     it.set("requested_users", Value::strs(users));
                     it.set("requested_teams", Value::strs(rteams));
                     let (reviewed, new) = review_activity(s, &me, &teams);

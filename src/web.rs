@@ -25,6 +25,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/rules", get(rules_page).post(rules_text))
         .route("/rules/form", post(rules_form))
         .route("/settings", get(settings_page).post(settings_save))
+        .route("/settings/reset-sync", post(reset_sync))
         .with_state(app)
 }
 
@@ -511,8 +512,20 @@ async fn settings_page(State(app): S) -> Markup {
                 p { button { "Save" } }
             }
             p.muted { "Signed in as " code { (app.store.setting("github.login").unwrap_or_default()) } }
+            h2 { "Reset sync" }
+            p.muted { "Forget synced notifications and re-fetch everything updated in the last " code { "sync_days" } " days. Cached PR details and CODEOWNERS are kept." }
+            form method="post" action="/settings/reset-sync" onsubmit="return confirm('Clear synced notifications and re-sync?')" {
+                button { "Reset sync" }
+            }
         },
     )
+}
+
+async fn reset_sync(State(app): S) -> Response {
+    match app.reset_sync() {
+        Ok(()) => Redirect::to("/").into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
 }
 
 async fn settings_save(State(app): S, Form(fields): Form<Vec<(String, String)>>) -> Response {

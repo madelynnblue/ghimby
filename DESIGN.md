@@ -36,7 +36,7 @@ Hidden items stay viewable in the app with the rule that hid them.
 | field | type |
 |---|---|
 | `repo`, `author`, `title`, `reason`, `state` | string |
-| `draft`, `reviewed_by_me`, `new_since_my_review` | bool |
+| `draft`, `requested_for_me`, `reviewed_by_me`, `new_since_my_review` | bool |
 | `labels`, `paths`, `requested_teams`, `requested_users` | list of strings |
 | `changed_files`, `additions`, `deletions` | int |
 | `updated`, `created` | timestamp (use `age(updated) > 14d`) |

@@ -46,6 +46,11 @@ pub const SETTINGS: &[Setting] = &[
         help: "Shell command that prints a GitHub token.",
     },
     Setting {
+        key: "sync_days",
+        default: "7",
+        help: "Keep notifications updated in the last this many days, read or unread.",
+    },
+    Setting {
         key: "poll_secs",
         default: "300",
         help: "Seconds between notification polls.",
@@ -139,19 +144,30 @@ impl Store {
         Ok(())
     }
 
-    /// Replaces the full set of notifications.
-    pub fn replace_notifications(&self, items: &[(String, String, i64)]) -> Result<()> {
+    pub fn upsert_notifications(&self, items: &[(String, String, i64)]) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
-        tx.execute("DELETE FROM notifications", [])?;
         {
-            let mut stmt =
-                tx.prepare("INSERT INTO notifications (id, json, updated_at) VALUES (?, ?, ?)")?;
+            let mut stmt = tx.prepare(
+                "INSERT INTO notifications (id, json, updated_at) VALUES (?, ?, ?)
+                 ON CONFLICT(id) DO UPDATE SET json = excluded.json, updated_at = excluded.updated_at",
+            )?;
             for (id, json, updated) in items {
                 stmt.execute(params![id, json, updated])?;
             }
         }
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Deletes notifications last updated before `before` (unix seconds).
+    pub fn prune_notifications(&self, before: i64) -> Result<()> {
+        self.with(|c| c.execute("DELETE FROM notifications WHERE updated_at < ?", [before]))?;
+        Ok(())
+    }
+
+    pub fn clear_notifications(&self) -> Result<()> {
+        self.with(|c| c.execute("DELETE FROM notifications", []))?;
         Ok(())
     }
 

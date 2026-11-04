@@ -29,6 +29,8 @@ pub trait Source: Send + Sync {
     fn fields(&self) -> &'static [FieldDoc];
     /// Fetches new data into the store.
     fn sync<'a>(&'a self, status: &'a Status) -> BoxFuture<'a, Result<()>>;
+    /// Forgets synced data so the next sync starts from scratch. Caches may be kept.
+    fn reset_sync(&self) -> Result<()>;
     /// Builds items from what's in the store.
     fn items(&self) -> Result<Vec<Item>>;
 }
