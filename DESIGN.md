@@ -40,7 +40,7 @@ Hidden items stay viewable in the app with the rule that hid them.
 | `draft`, `ignored`, `requested_for_me`, `reviewed_by_me`, `new_since_my_review` | bool |
 | `labels`, `paths`, `requested_teams`, `requested_users` | list of strings |
 | `changed_files`, `additions`, `deletions` | int |
-| `updated`, `created` | timestamp (use `age(updated) > 14d`) |
+| `updated`, `created`, `last_activity` | timestamp (use `age(updated) > 14d`) |
 | `codeowners` | per changed file, the owners of its last-matching CODEOWNERS line |
 
 `new_since_my_review` is true when, after your latest review, there was a new commit or force-push,
@@ -92,6 +92,24 @@ rules engine applies.
 - **Rules**: textarea with parse errors inline, a form view of the same rules, and a dry-run showing
   which items would change bucket before saving.
 - **Settings**: token source, poll interval.
+- **PR** (`/pr/<owner>/<repo>/<N>`, linked from each PR title): read-only description, conversation,
+  and the diff with review threads inline. See below.
+
+## PR page
+
+Shows a PR's description, conversation (comments and reviews), and per-file diffs with review
+threads under the line they're anchored to. Resolved threads start collapsed; outdated threads, and
+threads on lines missing from the patch, sit above their file's diff with the comment's hunk.
+
+- Data: one GraphQL query (`bodyHTML`, last 100 comments and reviews, first 100 review threads) plus
+  REST `pulls/N/files` for patches. Bodies are GitHub's rendered, sanitized HTML. Truncation is noted
+  on the page with a link to GitHub. Files with no patch (binary, too large) link to GitHub.
+- Cache: `pr_pages(key, json, updated_at, fetched_at)`. A page is stale when the PR's `updatedAt`
+  (the item's `last_activity`, which moves on commits, comments and reviews) is newer than the cached
+  one, or a notification arrived after it was fetched.
+- Sync re-fetches every stale cached page, prefetches shown PRs that aren't cached, and drops pages
+  of PRs no longer in the notification window. Viewing a stale or uncached page fetches it first.
+- A Refresh button at the top re-fetches it on demand.
 
 ## Open a PR locally
 

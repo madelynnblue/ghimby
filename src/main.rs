@@ -3,6 +3,7 @@ mod checkout;
 mod codeowners;
 mod glob;
 mod item;
+mod prpage;
 mod rules;
 mod source;
 mod store;

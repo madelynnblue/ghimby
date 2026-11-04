@@ -18,6 +18,8 @@ use crate::item::{Item, Value};
 use crate::rules::{self, Action, Compiled, Decision, FUNCTIONS};
 use crate::store::{SETTINGS, now};
 
+mod pr;
+
 type S = State<Arc<App>>;
 
 pub fn router(app: Arc<App>) -> Router {
@@ -33,6 +35,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/item/{id}/open", post(open_item))
         .route("/item/{id}/ignore", post(ignore_item))
         .route("/checkouts/remove", post(remove_checkout))
+        .route("/pr/{owner}/{repo}/{number}", get(pr::show))
+        .route("/pr/{owner}/{repo}/{number}/refresh", post(pr::refresh))
         .layer(middleware::from_fn(same_origin))
         .with_state(app)
 }
@@ -71,15 +75,8 @@ impl Local {
     }
 }
 
-fn pr_key(it: &Item) -> Option<String> {
-    match (it.get("type"), it.get("repo"), it.get("number")) {
-        (Value::Str(t), Value::Str(r), Value::Int(n)) if t == "PullRequest" => Some(key(r, *n)),
-        _ => None,
-    }
-}
-
 fn local_cell(it: &Item, local: &Local) -> Markup {
-    let Some(k) = pr_key(it) else { return html! {} };
+    let Some(k) = crate::prpage::item_key(it) else { return html! {} };
     let checkout = local.checkouts.get(&k);
     html! {
         form method="post" action=(format!("/item/{}/open", it.id)) style="display:inline" {
@@ -130,6 +127,24 @@ code { font: 12px ui-monospace, monospace; }
 .small { font-size: 12px; }
 .handle { cursor: grab; border: none; background: none; padding: 0 4px; color: var(--muted); font-size: 16px; }
 tr.dragging { opacity: 0.4; }
+:root { --add:#e6ffec; --del:#ffebe9; --merged:#8250df; }
+@media (prefers-color-scheme: dark) { :root { --add:rgba(46,160,67,0.15); --del:rgba(248,81,73,0.15); --merged:#ab7df8; } }
+.merged { color: var(--merged); }
+.md img { max-width: 100%; }
+.md pre, pre.hunk { background: var(--card); padding: 8px; overflow: auto; border-radius: 6px; font: 12px ui-monospace, monospace; }
+.md blockquote { color: var(--muted); border-left: 3px solid var(--border); margin: 0; padding-left: 8px; }
+.md table td, .md table th { border: 1px solid var(--border); }
+details.file { border: 1px solid var(--border); border-radius: 6px; margin: 12px 0; }
+details.file > summary { background: var(--card); padding: 6px 8px; position: sticky; top: 0; z-index: 1; }
+table.diff { font: 12px/1.45 ui-monospace, monospace; }
+table.diff td { border: none; padding: 0 6px; }
+table.diff td.code { white-space: pre-wrap; word-break: break-all; width: 100%; }
+table.diff td.ln { color: var(--muted); text-align: right; user-select: none; white-space: nowrap; }
+table.diff tr.add td { background: var(--add); }
+table.diff tr.del td { background: var(--del); }
+table.diff tr.hunk td { color: var(--muted); background: var(--card); }
+.thread { margin: 6px 0; padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); font: 14px/1.5 -apple-system, system-ui, sans-serif; white-space: normal; word-break: normal; }
+.comment + .comment { border-top: 1px solid var(--border); margin-top: 6px; padding-top: 6px; }
 "#;
 
 fn page(title: &str, body: Markup) -> Markup {
@@ -210,7 +225,11 @@ fn item_rows(items: &[(&Item, Decision)], limit: usize, now: i64, local: &Local)
                 tr {
                     td.nowrap { a href=(it.url) target="_blank" { (it.label) } }
                     td {
-                        (it.title) " "
+                        @match (crate::prpage::item_key(it), it.get("repo"), it.get("number")) {
+                            (Some(_), Value::Str(r), Value::Int(n)) => a href=(pr::href(r, *n)) { (it.title) },
+                            _ => (it.title),
+                        }
+                        " "
                         @for t in &d.tags { span.tag { (t) } }
                         @if !d.errors.is_empty() { span.tag.bad title=(d.errors.join("\n")) { "rule error" } }
                     }

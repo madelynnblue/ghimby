@@ -31,6 +31,8 @@ CREATE TABLE checkouts (
 );
 "#, r#"
 CREATE TABLE ignored (url TEXT PRIMARY KEY, label TEXT NOT NULL, created_at INTEGER NOT NULL);
+"#, r#"
+CREATE TABLE pr_pages (key TEXT PRIMARY KEY, json TEXT NOT NULL, updated_at INTEGER NOT NULL, fetched_at INTEGER NOT NULL);
 "#];
 
 #[derive(Clone)]
@@ -234,6 +236,38 @@ impl Store {
                 c.execute("DELETE FROM ignored WHERE url = ?", [url])
             }
         })?;
+        Ok(())
+    }
+
+    /// A cached PR page, keyed by "owner/repo#N".
+    pub fn pr_page(&self, key: &str) -> Result<Option<String>> {
+        self.with(|c| {
+            c.query_row("SELECT json FROM pr_pages WHERE key = ?", [key], |r| r.get(0))
+                .optional()
+        })
+    }
+
+    pub fn put_pr_page(&self, key: &str, json: &str, updated_at: i64, fetched_at: i64) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "INSERT OR REPLACE INTO pr_pages (key, json, updated_at, fetched_at) VALUES (?, ?, ?, ?)",
+                params![key, json, updated_at, fetched_at],
+            )
+        })?;
+        Ok(())
+    }
+
+    /// (PR updatedAt, fetched_at) of every cached PR page.
+    pub fn pr_page_times(&self) -> Result<std::collections::HashMap<String, (i64, i64)>> {
+        self.with(|c| {
+            c.prepare("SELECT key, updated_at, fetched_at FROM pr_pages")?
+                .query_map([], |r| Ok((r.get(0)?, (r.get(1)?, r.get(2)?))))?
+                .collect()
+        })
+    }
+
+    pub fn delete_pr_page(&self, key: &str) -> Result<()> {
+        self.with(|c| c.execute("DELETE FROM pr_pages WHERE key = ?", [key]))?;
         Ok(())
     }
 

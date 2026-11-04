@@ -15,7 +15,7 @@ use crate::item::{Item, Value};
 use crate::rules::FieldDoc;
 use crate::store::{Store, now};
 
-const API: &str = "https://api.github.com";
+pub const API: &str = "https://api.github.com";
 const SUBJECT_BATCH: usize = 25;
 const SUBJECT_CONCURRENCY: usize = 4;
 const CODEOWNERS_BATCH: usize = 20;
@@ -30,6 +30,7 @@ pub const FIELDS: &[FieldDoc] = &[
     FieldDoc { name: "title", help: "string" },
     FieldDoc { name: "updated", help: "Time of the latest notification update" },
     FieldDoc { name: "created", help: "Time the PR or issue was opened" },
+    FieldDoc { name: "last_activity", help: "Time the PR or issue last changed on GitHub (commits, comments, reviews)" },
     FieldDoc { name: "state", help: "open, closed, or merged" },
     FieldDoc { name: "draft", help: "bool" },
     FieldDoc { name: "author", help: "Login of the PR or issue author" },
@@ -85,7 +86,7 @@ fn ts(s: &str) -> Option<i64> {
     DateTime::parse_from_rfc3339(s).ok().map(|d| d.timestamp())
 }
 
-fn jts(v: &J) -> Option<i64> {
+pub(crate) fn jts(v: &J) -> Option<i64> {
     v.as_str().and_then(ts)
 }
 
@@ -117,7 +118,7 @@ impl GitHub {
         }
     }
 
-    async fn token(&self) -> Result<String> {
+    pub(crate) async fn token(&self) -> Result<String> {
         let t = self.store.setting("github_token")?;
         if !t.trim().is_empty() {
             return Ok(t.trim().to_string());
@@ -158,7 +159,7 @@ impl GitHub {
         Ok(resp)
     }
 
-    async fn get_all(&self, token: &str, first: &str) -> Result<Vec<J>> {
+    pub(crate) async fn get_all(&self, token: &str, first: &str) -> Result<Vec<J>> {
         let mut out = Vec::new();
         let mut url = Some(first.to_string());
         while let Some(u) = url {
@@ -170,7 +171,7 @@ impl GitHub {
         Ok(out)
     }
 
-    async fn graphql(&self, token: &str, query: &str) -> Result<J> {
+    pub(crate) async fn graphql(&self, token: &str, query: &str) -> Result<J> {
         let resp = self
             .http
             .post(format!("{API}/graphql"))
@@ -557,6 +558,9 @@ impl Source for GitHub {
                 if let Some(t) = jts(&s["createdAt"]) {
                     it.set("created", Value::Time(t));
                 }
+                if let Some(t) = jts(&s["updatedAt"]) {
+                    it.set("last_activity", Value::Time(t));
+                }
                 it.set("labels", Value::strs(strs_at(s, "labels", "name")));
                 if s["__typename"] == "PullRequest" {
                     it.set("draft", Value::Bool(s["isDraft"].as_bool().unwrap_or(false)));
@@ -601,12 +605,12 @@ impl Source for GitHub {
 const SUBJECT_FRAGMENT: &str = r#"
 __typename
 ... on Issue {
-  issueState: state url createdAt
+  issueState: state url createdAt updatedAt
   author { login }
   labels(first: 30) { nodes { name } }
 }
 ... on PullRequest {
-  prState: state url createdAt isDraft additions deletions changedFiles
+  prState: state url createdAt updatedAt isDraft additions deletions changedFiles
   author { login }
   labels(first: 30) { nodes { name } }
   files(first: 100) { nodes { path } }

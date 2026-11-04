@@ -1,9 +1,11 @@
 //! Shared state and the background sync loop.
 
+use std::collections::HashSet;
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
+use futures::StreamExt;
 use tokio::sync::Notify;
 
 use crate::checkout::{self, Checkouts};
@@ -11,6 +13,8 @@ use crate::item::{Item, Value};
 use crate::source::github::GitHub;
 use crate::rules::{self, Compiled, FieldDoc, Schema};
 use crate::source::{Source, Status};
+use crate::prpage::{self, PrPage};
+use crate::source::set_message;
 use crate::store::{Store, now};
 
 /// Fields the app sets on every item, whatever its source.
@@ -79,6 +83,9 @@ impl App {
         if let Err(e) = self.rebuild_items() {
             err.get_or_insert(format!("building items: {e:#}"));
         }
+        if let Err(e) = self.refresh_pr_pages().await {
+            err.get_or_insert(format!("fetching PR pages: {e:#}"));
+        }
         if let Err(e) = self.sweep_checkouts().await {
             err.get_or_insert(format!("cleaning up checkouts: {e:#}"));
         }
@@ -94,6 +101,69 @@ impl App {
                 s.last_error = None;
                 s.last_ok = Some(now());
             }
+        }
+    }
+
+    /// Re-fetches cached PR pages that changed, prefetches shown PRs, and drops pages of PRs
+    /// no longer in the inbox.
+    async fn refresh_pr_pages(&self) -> Result<()> {
+        let items = self.items();
+        let compiled = self.compile(&self.current_rules()?).ok();
+        let times = self.store.pr_page_times()?;
+        let now = now();
+        let mut want = Vec::new();
+        let mut keep = HashSet::new();
+        for it in items.iter() {
+            let Some(key) = prpage::item_key(it) else { continue };
+            if !keep.insert(key.clone()) {
+                continue;
+            }
+            let fetch = match times.get(&key) {
+                Some(t) => prpage::stale(*t, it),
+                None => compiled.as_ref().is_some_and(|c| c.decide(it, now).show),
+            };
+            if fetch {
+                let (Value::Str(repo), Value::Int(n)) = (it.get("repo"), it.get("number")) else { continue };
+                want.push((repo.clone(), *n));
+            }
+        }
+        for key in times.keys().filter(|k| !keep.contains(*k)) {
+            self.store.delete_pr_page(key)?;
+        }
+        let total = want.len();
+        let mut done = 0;
+        let mut errors = Vec::new();
+        let mut stream = futures::stream::iter(want)
+            .map(|(repo, n)| async move {
+                prpage::fetch_and_store(&self.github, &self.store, &repo, n).await.map_err(|e| format!("{repo}#{n}: {e:#}"))
+            })
+            .buffer_unordered(4);
+        while let Some(r) = stream.next().await {
+            done += 1;
+            if let Err(e) = r {
+                errors.push(e);
+            }
+            set_message(&self.status, format!("fetched PR pages {done}/{total}"));
+        }
+        if let Some(e) = errors.first() {
+            bail!("{} of {total} failed, first: {e}", errors.len());
+        }
+        Ok(())
+    }
+
+    /// The cached page for a PR, re-fetched first if `force` or the inbox knows of newer changes.
+    pub async fn pr_page(&self, repo: &str, number: i64, force: bool) -> (Option<PrPage>, Option<String>) {
+        let key = prpage::key(repo, number);
+        let cached = prpage::load(&self.store, &key);
+        let items = self.items();
+        let item = items.iter().find(|it| prpage::item_key(it).as_deref() == Some(key.as_str()));
+        let fresh = cached.as_ref().is_some_and(|p| item.is_none_or(|it| !prpage::stale((p.updated, p.fetched_at), it)));
+        if fresh && !force {
+            return (cached, None);
+        }
+        match prpage::fetch_and_store(&self.github, &self.store, repo, number).await {
+            Ok(p) => (Some(p), None),
+            Err(e) => (cached, Some(format!("{e:#}"))),
         }
     }
 
