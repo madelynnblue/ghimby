@@ -1,4 +1,5 @@
 mod app;
+mod checkout;
 mod codeowners;
 mod glob;
 mod item;
@@ -29,8 +30,11 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt::init();
     let args = Args::parse();
     let store = store::Store::open(&args.db)?;
+    let github = Arc::new(source::github::GitHub::new(store.clone()));
     let app = Arc::new(app::App {
-        sources: vec![Arc::new(source::github::GitHub::new(store.clone()))],
+        sources: vec![github.clone()],
+        github,
+        checkouts: Default::default(),
         store,
         items: Default::default(),
         status: Default::default(),

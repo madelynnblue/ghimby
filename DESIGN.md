@@ -22,6 +22,7 @@ bottom. `show`/`hide` stop at the first match; `tag` adds a label and keeps goin
 
 ```
 hide "finished"         if state != "open"
+hide "ignored"          if ignored
 hide "bots"             if author in ["dependabot", "acme-ci"]
 hide "already reviewed" if reviewed_by_me and not new_since_my_review
 tag  "draft"            if draft
@@ -36,7 +37,7 @@ Hidden items stay viewable in the app with the rule that hid them.
 | field | type |
 |---|---|
 | `repo`, `author`, `title`, `reason`, `state` | string |
-| `draft`, `requested_for_me`, `reviewed_by_me`, `new_since_my_review` | bool |
+| `draft`, `ignored`, `requested_for_me`, `reviewed_by_me`, `new_since_my_review` | bool |
 | `labels`, `paths`, `requested_teams`, `requested_users` | list of strings |
 | `changed_files`, `additions`, `deletions` | int |
 | `updated`, `created` | timestamp (use `age(updated) > 14d`) |
@@ -44,6 +45,9 @@ Hidden items stay viewable in the app with the rule that hid them.
 
 `new_since_my_review` is true when, after your latest review, there was a new commit or force-push,
 a comment or review by another human, or a review re-request for you or one of your teams.
+
+`ignored` is set by the Ignore button on an inbox row (keyed by the item's URL, so it survives
+re-syncs). Ignoring only sets the field; the `hide "ignored"` rule is what hides it.
 
 A comparison against a field the item doesn't have (e.g. `state` on a release notification) is false.
 
@@ -84,9 +88,79 @@ rules engine applies.
 ### Pages
 
 - **Inbox**: shown items (with tags), then a collapsed hidden section grouped by the rule that hid each.
+  Each row has an Ignore/Unignore button.
 - **Rules**: textarea with parse errors inline, a form view of the same rules, and a dry-run showing
   which items would change bucket before saving.
 - **Settings**: token source, poll interval.
+
+## Open a PR locally
+
+An "Open" button on each PR row checks the PR out in its own git worktree and opens it in an editor,
+set up so VS Code's GitHub Pull Requests extension treats it as that PR (description, inline review
+comments, adding comments and reviews).
+
+### Finding the local clone
+
+- Setting `repo_roots`: folders to scan (default `~/code, ~/code/github.com/*`), a few levels deep.
+- A clone matches `owner/repo` by its `origin` remote, normalized across `git@github.com:`,
+  `org-…@github.com:` and `https://` forms. Git worktrees and jj workspaces are skipped (`.git` is a
+  file, or `.jj/repo` is a file).
+- Setting `repo_paths`: `owner/repo = path` lines that win over scanning, for duplicates such as two
+  clones of the same repo.
+- Scan results are cached in SQLite and listed on the settings page with a rescan button.
+- Not cloned: `gh repo clone` (plain git, not jj) into the `clone_path` setting
+  (default `~/code/github.com/{owner}/{repo}`), then continue.
+
+### One worktree per PR
+
+Layout mirrors Claude Code's `claude --worktree "#1234"` (`.claude/worktrees/pr-1234`), under `.ghimby` so the two tools stay separate:
+
+- Path: `<clone>/.ghimby/worktrees/pr-<N>`.
+- Branch: `worktree-pr-<N>`.
+- `.ghimby/worktrees/` is added to the clone's `.git/info/exclude` (local only, never committed).
+  jj already skips nested worktrees.
+
+The path and branch depend only on the clone and PR number, so every click lands in the same place. A
+`checkouts(repo, number, path, branch, head_oid, updated_at)` table records them, and a per-PR lock
+serializes concurrent clicks.
+
+On click:
+
+1. Look up the PR's current `headRefOid` with GraphQL.
+2. `git fetch origin pull/<N>/head`. This works for fork PRs too.
+3. If no worktree exists at the path (checked against `git worktree list`), run
+   `git worktree add -B worktree-pr-<N> <path> FETCH_HEAD`.
+4. If it exists and is behind: when it has no uncommitted changes and no commits beyond the last head
+   ghimby checked out, `git reset --hard FETCH_HEAD` (handles force-pushes). Otherwise leave it and
+   report "not updated: local changes".
+5. Set `branch.worktree-pr-<N>.github-pr-owner-number = <owner>#<repo>#<N>` and
+   `branch.worktree-pr-<N>.remote = origin`. The PR extension reads these to link the branch to the PR.
+6. Run the `editor_cmd` setting (default `code {path}`, `cursor {path}` also works). Empty uses the
+   system opener (`open` on macOS, `xdg-open` on Linux).
+
+Using git rather than a jj workspace is deliberate: the PR extension expects git. jj sees the local
+`worktree-pr-<N>` branch as a bookmark, which keeps the PR commits from being abandoned by later
+`jj git fetch` runs.
+
+### UI and safety
+
+- The button is a form POST, not a link, since it runs commands. Requests whose `Origin` isn't the app
+  itself are rejected, so other sites can't trigger it.
+- The row shows progress and the result (opened, updated, not updated, error).
+- Settings page lists existing checkouts with a remove button
+  (`git worktree remove` + delete the branch).
+
+### Cleanup
+
+A sweep runs after each sync and removes a checkout only when nothing would be lost:
+
+- The PR has been merged or closed for longer than `checkout_cleanup_days` (default 1).
+- The worktree has no uncommitted changes and no commits beyond the last head ghimby checked out.
+
+Removal runs `git worktree remove`, deletes the `worktree-pr-<N>` branch and its two
+`github-pr-*`/`remote` config keys, and drops the record. Checkouts that fail the safety check stay and
+are flagged on the settings page ("PR closed, has local changes"). If the folder was deleted by hand,
+the sweep runs `git worktree prune` and drops the record. Open PRs are never removed automatically.
 
 ## Not in v1
 

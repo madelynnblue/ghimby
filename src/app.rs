@@ -6,10 +6,18 @@ use std::time::Duration;
 use anyhow::Result;
 use tokio::sync::Notify;
 
-use crate::item::Item;
-use crate::rules::{self, Compiled, Schema};
+use crate::checkout::{self, Checkouts};
+use crate::item::{Item, Value};
+use crate::source::github::GitHub;
+use crate::rules::{self, Compiled, FieldDoc, Schema};
 use crate::source::{Source, Status};
 use crate::store::{Store, now};
+
+/// Fields the app sets on every item, whatever its source.
+const APP_FIELDS: &[FieldDoc] = &[FieldDoc {
+    name: "ignored",
+    help: "You clicked Ignore on this item in the inbox",
+}];
 
 pub struct App {
     pub store: Store,
@@ -17,11 +25,14 @@ pub struct App {
     pub items: RwLock<Arc<Vec<Item>>>,
     pub status: Status,
     pub kick: Notify,
+    pub github: Arc<GitHub>,
+    pub checkouts: Checkouts,
 }
 
 impl App {
     pub fn schema(&self) -> Schema {
         let mut s = Schema::default();
+        s.extend(APP_FIELDS);
         for src in &self.sources {
             s.extend(src.fields());
         }
@@ -40,6 +51,10 @@ impl App {
         let mut all = Vec::new();
         for src in &self.sources {
             all.extend(src.items()?);
+        }
+        let ignored = self.store.ignored()?;
+        for it in &mut all {
+            it.set("ignored", Value::Bool(ignored.contains(&it.url)));
         }
         *self.items.write().unwrap() = Arc::new(all);
         Ok(())
@@ -64,6 +79,9 @@ impl App {
         if let Err(e) = self.rebuild_items() {
             err.get_or_insert(format!("building items: {e:#}"));
         }
+        if let Err(e) = self.sweep_checkouts().await {
+            err.get_or_insert(format!("cleaning up checkouts: {e:#}"));
+        }
         let mut s = self.status.lock().unwrap();
         s.running = false;
         s.message.clear();
@@ -77,6 +95,18 @@ impl App {
                 s.last_ok = Some(now());
             }
         }
+    }
+
+    async fn sweep_checkouts(&self) -> Result<()> {
+        let prs: Vec<(String, i64)> = self
+            .store
+            .checkouts()?
+            .into_iter()
+            .filter(|c| !c.clone.is_empty())
+            .map(|c| (c.repo, c.number))
+            .collect();
+        let states = self.github.pr_states(&prs).await?;
+        checkout::sweep(&self.store, &states).await
     }
 
     /// Clears every source's synced data and starts a fresh sync.

@@ -8,6 +8,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 pub const DEFAULT_RULES: &str = r#"# Rules run top to bottom. show/hide stop at the first match; tag keeps going.
 hide "finished" if state != "open"
+hide "ignored" if ignored
 hide "bots" if author in ["dependabot", "renovate"]
 hide "already reviewed" if reviewed_by_me and not new_since_my_review
 tag "draft" if draft
@@ -20,6 +21,16 @@ CREATE TABLE rules (id INTEGER PRIMARY KEY AUTOINCREMENT, text TEXT NOT NULL, cr
 CREATE TABLE notifications (id TEXT PRIMARY KEY, json TEXT NOT NULL, updated_at INTEGER NOT NULL);
 CREATE TABLE subjects (key TEXT PRIMARY KEY, json TEXT NOT NULL, fetched_at INTEGER NOT NULL);
 CREATE TABLE codeowners (repo TEXT PRIMARY KEY, content TEXT, fetched_at INTEGER NOT NULL);
+"#, r#"
+CREATE TABLE local_repos (repo TEXT PRIMARY KEY, path TEXT NOT NULL, others TEXT NOT NULL);
+CREATE TABLE checkouts (
+  repo TEXT NOT NULL, number INTEGER NOT NULL, clone TEXT NOT NULL, path TEXT NOT NULL,
+  branch TEXT NOT NULL, head_oid TEXT NOT NULL, status TEXT NOT NULL,
+  closed_seen_at INTEGER, updated_at INTEGER NOT NULL,
+  PRIMARY KEY (repo, number)
+);
+"#, r#"
+CREATE TABLE ignored (url TEXT PRIMARY KEY, label TEXT NOT NULL, created_at INTEGER NOT NULL);
 "#];
 
 #[derive(Clone)]
@@ -31,6 +42,29 @@ pub struct Setting {
     pub key: &'static str,
     pub default: &'static str,
     pub help: &'static str,
+    pub multiline: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct Checkout {
+    pub repo: String,
+    pub number: i64,
+    pub clone: String,
+    pub path: String,
+    pub branch: String,
+    /// The PR head ghimby last put in the worktree.
+    pub head_oid: String,
+    pub status: String,
+    pub closed_seen_at: Option<i64>,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub struct LocalRepo {
+    pub repo: String,
+    pub path: String,
+    /// Other clones of the same repo that lost to `path`.
+    pub others: Vec<String>,
 }
 
 /// Settings editable in the app, with defaults used when unset.
@@ -39,31 +73,67 @@ pub const SETTINGS: &[Setting] = &[
         key: "github_token",
         default: "",
         help: "GitHub token. Leave empty to use the token command.",
+        multiline: false,
     },
     Setting {
         key: "github_token_cmd",
         default: "gh auth token",
         help: "Shell command that prints a GitHub token.",
+        multiline: false,
     },
     Setting {
         key: "sync_days",
         default: "7",
         help: "Keep notifications updated in the last this many days, read or unread.",
+        multiline: false,
     },
     Setting {
         key: "poll_secs",
         default: "300",
         help: "Seconds between notification polls.",
+        multiline: false,
     },
     Setting {
         key: "subject_refresh_secs",
         default: "900",
         help: "Re-fetch details of open PRs/issues older than this many seconds.",
+        multiline: false,
     },
     Setting {
         key: "codeowners_refresh_secs",
         default: "21600",
         help: "Re-fetch CODEOWNERS files older than this many seconds.",
+        multiline: false,
+    },
+    Setting {
+        key: "editor_cmd",
+        default: "code {path}",
+        help: "Command that opens a PR checkout; {path} is replaced with the folder. Empty uses the system opener (open on macOS, xdg-open on Linux).",
+        multiline: false,
+    },
+    Setting {
+        key: "repo_roots",
+        default: "~/code\n~/code/github.com/*",
+        help: "Folders whose direct subfolders are scanned for clones, one per line. A * component matches every subfolder.",
+        multiline: true,
+    },
+    Setting {
+        key: "repo_paths",
+        default: "",
+        help: "owner/repo = path lines that override scanning, e.g. for repos cloned twice.",
+        multiline: true,
+    },
+    Setting {
+        key: "clone_path",
+        default: "~/code/github.com/{owner}/{repo}",
+        help: "Where to git clone a repo that isn't found locally.",
+        multiline: false,
+    },
+    Setting {
+        key: "checkout_cleanup_days",
+        default: "1",
+        help: "Remove a PR checkout this many days after the PR merges or closes, if it has no local changes.",
+        multiline: false,
     },
 ];
 
@@ -144,6 +214,29 @@ impl Store {
         Ok(())
     }
 
+    /// URLs of items the user ignored.
+    pub fn ignored(&self) -> Result<std::collections::HashSet<String>> {
+        self.with(|c| {
+            c.prepare("SELECT url FROM ignored")?
+                .query_map([], |r| r.get(0))?
+                .collect()
+        })
+    }
+
+    pub fn set_ignored(&self, url: &str, label: &str, ignored: bool) -> Result<()> {
+        self.with(|c| {
+            if ignored {
+                c.execute(
+                    "INSERT OR REPLACE INTO ignored (url, label, created_at) VALUES (?, ?, ?)",
+                    params![url, label, now()],
+                )
+            } else {
+                c.execute("DELETE FROM ignored WHERE url = ?", [url])
+            }
+        })?;
+        Ok(())
+    }
+
     pub fn upsert_notifications(&self, items: &[(String, String, i64)]) -> Result<()> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;
@@ -204,6 +297,89 @@ impl Store {
                 "INSERT INTO codeowners (repo, content, fetched_at) VALUES (?, ?, ?)
                  ON CONFLICT(repo) DO UPDATE SET content = excluded.content, fetched_at = excluded.fetched_at",
                 params![repo, content, now()],
+            )
+        })?;
+        Ok(())
+    }
+
+    pub fn put_local_repos(&self, repos: &[LocalRepo]) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        tx.execute("DELETE FROM local_repos", [])?;
+        for r in repos {
+            tx.execute(
+                "INSERT INTO local_repos (repo, path, others) VALUES (?, ?, ?)",
+                params![r.repo, r.path, serde_json::to_string(&r.others).unwrap()],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    pub fn local_repos(&self) -> Result<Vec<LocalRepo>> {
+        self.with(|c| {
+            let mut stmt = c.prepare("SELECT repo, path, others FROM local_repos ORDER BY repo")?;
+            stmt.query_map([], |r| {
+                let others: String = r.get(2)?;
+                Ok(LocalRepo {
+                    repo: r.get(0)?,
+                    path: r.get(1)?,
+                    others: serde_json::from_str(&others).unwrap_or_default(),
+                })
+            })?
+            .collect()
+        })
+    }
+
+    pub fn put_checkout(&self, c: &Checkout) -> Result<()> {
+        self.with(|conn| {
+            conn.execute(
+                "INSERT INTO checkouts (repo, number, clone, path, branch, head_oid, status, closed_seen_at, updated_at)
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                 ON CONFLICT(repo, number) DO UPDATE SET clone = excluded.clone, path = excluded.path,
+                   branch = excluded.branch, head_oid = excluded.head_oid, status = excluded.status,
+                   closed_seen_at = excluded.closed_seen_at, updated_at = excluded.updated_at",
+                params![c.repo, c.number, c.clone, c.path, c.branch, c.head_oid, c.status, c.closed_seen_at, c.updated_at],
+            )
+        })?;
+        Ok(())
+    }
+
+    pub fn checkouts(&self) -> Result<Vec<Checkout>> {
+        self.with(|c| {
+            let mut stmt = c.prepare(
+                "SELECT repo, number, clone, path, branch, head_oid, status, closed_seen_at, updated_at
+                 FROM checkouts ORDER BY repo, number",
+            )?;
+            stmt.query_map([], |r| {
+                Ok(Checkout {
+                    repo: r.get(0)?,
+                    number: r.get(1)?,
+                    clone: r.get(2)?,
+                    path: r.get(3)?,
+                    branch: r.get(4)?,
+                    head_oid: r.get(5)?,
+                    status: r.get(6)?,
+                    closed_seen_at: r.get(7)?,
+                    updated_at: r.get(8)?,
+                })
+            })?
+            .collect()
+        })
+    }
+
+    pub fn checkout(&self, repo: &str, number: i64) -> Result<Option<Checkout>> {
+        Ok(self
+            .checkouts()?
+            .into_iter()
+            .find(|c| c.repo == repo && c.number == number))
+    }
+
+    pub fn delete_checkout(&self, repo: &str, number: i64) -> Result<()> {
+        self.with(|c| {
+            c.execute(
+                "DELETE FROM checkouts WHERE repo = ? AND number = ?",
+                params![repo, number],
             )
         })?;
         Ok(())

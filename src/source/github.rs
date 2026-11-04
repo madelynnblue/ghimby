@@ -376,6 +376,34 @@ impl GitHub {
         Ok(())
     }
 
+    /// Current state (OPEN, CLOSED, MERGED) of each PR, keyed by "owner/repo#N".
+    pub async fn pr_states(&self, prs: &[(String, i64)]) -> Result<HashMap<String, String>> {
+        let mut out = HashMap::new();
+        if prs.is_empty() {
+            return Ok(out);
+        }
+        let token = self.token().await?;
+        for chunk in prs.chunks(50) {
+            let mut q = String::from("query {");
+            for (i, (repo, n)) in chunk.iter().enumerate() {
+                let (o, r) = repo.split_once('/').unwrap_or((repo, ""));
+                q += &format!(
+                    " p{i}: repository(owner: {}, name: {}) {{ pullRequest(number: {n}) {{ state }} }}",
+                    serde_json::to_string(o)?,
+                    serde_json::to_string(r)?,
+                );
+            }
+            q.push('}');
+            let body = self.graphql(&token, &q).await?;
+            for (i, (repo, n)) in chunk.iter().enumerate() {
+                if let Some(s) = body["data"][format!("p{i}")]["pullRequest"]["state"].as_str() {
+                    out.insert(format!("{repo}#{n}"), s.to_string());
+                }
+            }
+        }
+        Ok(out)
+    }
+
     async fn run_sync(&self, status: &Status) -> Result<()> {
         set_message(status, "getting token");
         let token = self.token().await?;

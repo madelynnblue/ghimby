@@ -1,9 +1,10 @@
 //! Server-rendered web UI.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 use std::sync::Arc;
 
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, Query, Request, State};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Router};
@@ -11,6 +12,8 @@ use maud::{DOCTYPE, Markup, PreEscaped, html};
 use serde::Deserialize;
 
 use crate::app::App;
+use crate::checkout::{self, key};
+use crate::store::Checkout;
 use crate::item::{Item, Value};
 use crate::rules::{self, Action, Compiled, Decision, FUNCTIONS};
 use crate::store::{SETTINGS, now};
@@ -26,7 +29,82 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/rules/form", post(rules_form))
         .route("/settings", get(settings_page).post(settings_save))
         .route("/settings/reset-sync", post(reset_sync))
+        .route("/settings/rescan", post(rescan))
+        .route("/item/{id}/open", post(open_item))
+        .route("/item/{id}/ignore", post(ignore_item))
+        .route("/checkouts/remove", post(remove_checkout))
+        .layer(middleware::from_fn(same_origin))
         .with_state(app)
+}
+
+/// POSTs run commands on this machine, so reject ones sent by other sites.
+async fn same_origin(req: Request, next: Next) -> Response {
+    if req.method() == axum::http::Method::POST {
+        let header = |n: &str| req.headers().get(n).and_then(|v| v.to_str().ok()).unwrap_or("");
+        let origin = header("origin");
+        let host = header("host");
+        if !origin.is_empty() && origin != format!("http://{host}") {
+            return (axum::http::StatusCode::FORBIDDEN, "cross-origin request rejected").into_response();
+        }
+    }
+    next.run(req).await
+}
+
+/// Checkout records and in-progress jobs, keyed by "owner/repo#N".
+struct Local {
+    checkouts: HashMap<String, Checkout>,
+    running: HashMap<String, String>,
+}
+
+impl Local {
+    fn load(app: &App) -> Local {
+        Local {
+            checkouts: app
+                .store
+                .checkouts()
+                .unwrap_or_default()
+                .into_iter()
+                .map(|c| (key(&c.repo, c.number), c))
+                .collect(),
+            running: app.checkouts.running.lock().unwrap().clone(),
+        }
+    }
+}
+
+fn pr_key(it: &Item) -> Option<String> {
+    match (it.get("type"), it.get("repo"), it.get("number")) {
+        (Value::Str(t), Value::Str(r), Value::Int(n)) if t == "PullRequest" => Some(key(r, *n)),
+        _ => None,
+    }
+}
+
+fn local_cell(it: &Item, local: &Local) -> Markup {
+    let Some(k) = pr_key(it) else { return html! {} };
+    let checkout = local.checkouts.get(&k);
+    html! {
+        form method="post" action=(format!("/item/{}/open", it.id)) style="display:inline" {
+            button title="Check out in a worktree and open the editor" { "Open" }
+        }
+        @if let Some(msg) = local.running.get(&k) {
+            div.muted { (msg) "…" }
+        } @else if let Some(c) = checkout {
+            div.muted.small title=(c.path) class=[c.status.starts_with("error").then_some("bad")] { (c.status) }
+        }
+    }
+}
+
+fn ignore_button(it: &Item) -> Markup {
+    let ignored = matches!(it.get("ignored"), Value::Bool(true));
+    html! {
+        form method="post" action=(format!("/item/{}/ignore", it.id)) {
+            @if ignored {
+                input type="hidden" name="undo" value="1";
+                button title="Stop setting the ignored field on this item" { "Unignore" }
+            } @else {
+                button title="Set the ignored field on this item so a rule can hide it" { "Ignore" }
+            }
+        }
+    }
 }
 
 const CSS: &str = r#"
@@ -49,6 +127,7 @@ textarea { width: 100%; min-height: 260px; }
 button { font: inherit; padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--fg); cursor: pointer; }
 code { font: 12px ui-monospace, monospace; }
 .nowrap { white-space: nowrap; }
+.small { font-size: 12px; }
 .handle { cursor: grab; border: none; background: none; padding: 0 4px; color: var(--muted); font-size: 16px; }
 tr.dragging { opacity: 0.4; }
 "#;
@@ -123,10 +202,10 @@ fn str_field<'a>(it: &'a Item, f: &str) -> &'a str {
     }
 }
 
-fn item_rows(items: &[(&Item, Decision)], limit: usize, now: i64) -> Markup {
+fn item_rows(items: &[(&Item, Decision)], limit: usize, now: i64, local: &Local) -> Markup {
     html! {
         table {
-            tr { th { "" } th { "Title" } th { "Author" } th { "Reason" } th { "Updated" } }
+            tr { th { "" } th { "Title" } th { "Author" } th { "Reason" } th { "Updated" } th { "Local" } th { "" } }
             @for (it, d) in items.iter().take(limit) {
                 tr {
                     td.nowrap { a href=(it.url) target="_blank" { (it.label) } }
@@ -138,6 +217,8 @@ fn item_rows(items: &[(&Item, Decision)], limit: usize, now: i64) -> Markup {
                     td.nowrap.muted { (str_field(it, "author")) }
                     td.nowrap.muted { (str_field(it, "reason")) }
                     td.nowrap.muted { a href=(format!("/item/{}", it.id)) title="Why?" { (ago(now - updated(it))) } }
+                    td style="max-width:220px" { (local_cell(it, local)) }
+                    td { (ignore_button(it)) }
                 }
             }
         }
@@ -169,6 +250,7 @@ fn compile_current(app: &App) -> Result<Compiled, Markup> {
 
 async fn inbox(State(app): S) -> Markup {
     let now = now();
+    let local = Local::load(&app);
     let items = app.items();
     let compiled = compile_current(&app);
     let decided: Vec<(&Item, Decision)> = items
@@ -201,12 +283,13 @@ async fn inbox(State(app): S) -> Markup {
             @if let Err(m) = &compiled { (m) }
             @if errored > 0 { div.card.bad { (errored) " item(s) hit rule errors; hover the \"rule error\" tag for details." } }
             h2 { "Shown " span.muted { "(" (shown.len()) ")" } }
-            (item_rows(&shown, usize::MAX, now))
+            @if !local.running.is_empty() { meta http-equiv="refresh" content="2"; }
+            (item_rows(&shown, usize::MAX, now, &local))
             h2 { "Hidden " span.muted { "(" (hidden.iter().map(|(_, v)| v.len()).sum::<usize>()) ")" } }
             @for (rule, v) in &hidden {
                 details {
                     summary { "by " b { (rule) } " " span.muted { "(" (v.len()) ")" } }
-                    (item_rows(v, 300, now))
+                    (item_rows(v, 300, now, &local))
                 }
             }
         },
@@ -501,6 +584,8 @@ async fn settings_page(State(app): S) -> Markup {
                                 @if s.key == "github_token" {
                                     input type="password" name=(s.key) value="" placeholder=(if v.is_empty() { "not set" } else { "set (leave empty to keep)" }) size="40";
                                     " " label { input type="checkbox" name="clear_token"; " clear" }
+                                } @else if s.multiline {
+                                    textarea name=(s.key) rows="3" style="min-height:0" { (v) }
                                 } @else {
                                     input type="text" name=(s.key) value=(v) size="40";
                                 }
@@ -517,8 +602,108 @@ async fn settings_page(State(app): S) -> Markup {
             form method="post" action="/settings/reset-sync" onsubmit="return confirm('Clear synced notifications and re-sync?')" {
                 button { "Reset sync" }
             }
+            h2 { "PR checkouts" }
+            p.muted { "Worktrees made by the Open button. Merged or closed PRs are removed automatically after " code { "checkout_cleanup_days" } " unless they have local changes." }
+            @let checkouts = app.store.checkouts().unwrap_or_default();
+            @if checkouts.is_empty() { p.muted { "None yet." } }
+            table {
+                @for c in &checkouts {
+                    tr {
+                        td.nowrap { (c.repo) "#" (c.number) }
+                        td { code.small { (c.path) } }
+                        td class=[(c.status.starts_with("error") || c.status.contains("kept")).then_some("bad")] { (c.status) }
+                        td.nowrap {
+                            form method="post" action="/checkouts/remove" style="display:inline" onsubmit="return confirm('Remove this worktree?')" {
+                                input type="hidden" name="repo" value=(c.repo);
+                                input type="hidden" name="number" value=(c.number);
+                                button { "Remove" }
+                            }
+                            " "
+                            form method="post" action="/checkouts/remove" style="display:inline" onsubmit="return confirm('Remove this worktree and its branch even if it has local changes?')" {
+                                input type="hidden" name="repo" value=(c.repo);
+                                input type="hidden" name="number" value=(c.number);
+                                input type="hidden" name="force" value="1";
+                                button { "Force remove" }
+                            }
+                        }
+                    }
+                }
+            }
+            h2 { "Local clones" }
+            p.muted { "Found by scanning " code { "repo_roots" } ", plus " code { "repo_paths" } " overrides." }
+            form method="post" action="/settings/rescan" { button { "Rescan" } }
+            table {
+                @for r in app.store.local_repos().unwrap_or_default() {
+                    tr {
+                        td.nowrap { (r.repo) }
+                        td { code.small { (r.path) } }
+                        td.muted.small { @if !r.others.is_empty() { "also at: " (r.others.join(", ")) } }
+                    }
+                }
+            }
         },
     )
+}
+
+async fn rescan(State(app): S) -> Response {
+    match checkout::scan(&app.store) {
+        Ok(_) => Redirect::to("/settings").into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+async fn open_item(State(app): S, Path(id): Path<String>) -> Response {
+    let items = app.items();
+    let Some(it) = items.iter().find(|it| it.id == id) else {
+        return (axum::http::StatusCode::NOT_FOUND, "no such item").into_response();
+    };
+    let (Value::Str(repo), Value::Int(number)) = (it.get("repo").clone(), it.get("number").clone()) else {
+        return (axum::http::StatusCode::BAD_REQUEST, "not a pull request").into_response();
+    };
+    // Show progress right away, before the task gets scheduled.
+    app.checkouts.running.lock().unwrap().insert(key(&repo, number), "starting".into());
+    let app2 = app.clone();
+    tokio::spawn(async move { app2.checkouts.open(&app2.store, &repo, number).await });
+    Redirect::to("/").into_response()
+}
+
+#[derive(Deserialize)]
+struct IgnoreForm {
+    undo: Option<String>,
+}
+
+async fn ignore_item(State(app): S, Path(id): Path<String>, Form(f): Form<IgnoreForm>) -> Response {
+    let items = app.items();
+    let Some(it) = items.iter().find(|it| it.id == id) else {
+        return (axum::http::StatusCode::NOT_FOUND, "no such item").into_response();
+    };
+    let res = app
+        .store
+        .set_ignored(&it.url, &it.label, f.undo.is_none())
+        .and_then(|()| app.rebuild_items());
+    match res {
+        Ok(()) => Redirect::to("/").into_response(),
+        Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    }
+}
+
+#[derive(Deserialize)]
+struct RemoveForm {
+    repo: String,
+    number: i64,
+    force: Option<String>,
+}
+
+async fn remove_checkout(State(app): S, Form(f): Form<RemoveForm>) -> Response {
+    let Ok(Some(c)) = app.store.checkout(&f.repo, f.number) else {
+        return Redirect::to("/settings").into_response();
+    };
+    if let Err(e) = checkout::remove(&app.store, &c, f.force.is_some()).await {
+        let mut c = c;
+        c.status = format!("not removed: {e:#}");
+        let _ = app.store.put_checkout(&c);
+    }
+    Redirect::to("/settings").into_response()
 }
 
 async fn reset_sync(State(app): S) -> Response {
@@ -535,6 +720,7 @@ async fn settings_save(State(app): S, Form(fields): Form<Vec<(String, String)>>)
         if s.key == "github_token" && v.is_empty() && !clear {
             continue;
         }
+        let v = v.replace("\r\n", "\n");
         if let Err(e) = app.store.set_setting(s.key, v.trim()) {
             return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
