@@ -48,6 +48,8 @@ textarea { width: 100%; min-height: 260px; }
 button { font: inherit; padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--card); color: var(--fg); cursor: pointer; }
 code { font: 12px ui-monospace, monospace; }
 .nowrap { white-space: nowrap; }
+.handle { cursor: grab; border: none; background: none; padding: 0 4px; color: var(--muted); font-size: 16px; }
+tr.dragging { opacity: 0.4; }
 "#;
 
 fn page(title: &str, body: Markup) -> Markup {
@@ -311,18 +313,19 @@ fn rules_editor(app: &App, text: &str, pv: Option<Preview>, saved: bool) -> Mark
         }
         @if let Some(c) = &parsed {
             h2 { "Rules as a form" }
-            p.muted { "Same rules, edited row by row. Saving from here drops comments. Rows are ordered by the # column." }
-            form method="post" action="/rules/form" {
+            p.muted { "Same rules, edited row by row. Drag the handle to reorder (or focus it and use the arrow keys). Saving from here drops comments." }
+            form #rule-form method="post" action="/rules/form" {
                 table {
-                    tr { th { "#" } th { "Action" } th { "Name" } th { "Condition" } th { "Delete" } }
-                    @for (i, r) in c.program.rules.iter().enumerate() {
-                        (form_row(i, (i + 1) * 10, Some(r.action), &r.name, &r.cond_src))
+                    thead { tr { th { "" } th { "Action" } th { "Name" } th { "Condition" } th { "Delete" } } }
+                    tbody #rule-rows {
+                        @for (i, r) in c.program.rules.iter().enumerate() {
+                            (form_row(i, Some(r.action), &r.name, &r.cond_src))
+                        }
+                        @for j in 0..blank_rows {
+                            (form_row(c.program.rules.len() + j, None, "", ""))
+                        }
                     }
-                    @for j in 0..blank_rows {
-                        @let i = c.program.rules.len() + j;
-                        (form_row(i, (i + 1) * 10, None, "", ""))
-                    }
-                    tr {
+                    tfoot { tr {
                         td {} td { "default" }
                         td colspan="3" {
                             select name="default" {
@@ -330,10 +333,11 @@ fn rules_editor(app: &App, text: &str, pv: Option<Preview>, saved: bool) -> Mark
                                 option value="hide" selected[c.program.default == Action::Hide] { "hide" }
                             }
                         }
-                    }
+                    } }
                 }
                 p { button name="op" value="preview" { "Preview" } " " button name="op" value="save" { "Save" } }
             }
+            script { (PreEscaped(DRAG_JS)) }
         }
         h2 { "Reference" }
         details {
@@ -353,10 +357,58 @@ fn rules_editor(app: &App, text: &str, pv: Option<Preview>, saved: bool) -> Mark
     }
 }
 
-fn form_row(i: usize, pos: usize, action: Option<Action>, name: &str, cond: &str) -> Markup {
+/// Reorders rule rows by dragging the handle; positions are written into hidden inputs on submit.
+const DRAG_JS: &str = r#"
+(() => {
+  const form = document.getElementById('rule-form');
+  const tb = document.getElementById('rule-rows');
+  let dragged = null;
+  tb.addEventListener('mousedown', e => {
+    const h = e.target.closest('.handle');
+    if (h) h.closest('tr').draggable = true;
+  });
+  tb.addEventListener('dragstart', e => {
+    dragged = e.target.closest('tr');
+    dragged.classList.add('dragging');
+    e.dataTransfer.effectAllowed = 'move';
+    e.dataTransfer.setData('text/plain', '');
+  });
+  tb.addEventListener('dragover', e => {
+    if (!dragged) return;
+    e.preventDefault();
+    const tr = e.target.closest('tr');
+    if (!tr || tr === dragged) return;
+    const r = tr.getBoundingClientRect();
+    tb.insertBefore(dragged, e.clientY > r.top + r.height / 2 ? tr.nextSibling : tr);
+  });
+  tb.addEventListener('dragend', () => {
+    if (!dragged) return;
+    dragged.classList.remove('dragging');
+    dragged.draggable = false;
+    dragged = null;
+  });
+  tb.addEventListener('keydown', e => {
+    const h = e.target.closest('.handle');
+    if (!h || (e.key !== 'ArrowUp' && e.key !== 'ArrowDown')) return;
+    e.preventDefault();
+    const tr = h.closest('tr');
+    if (e.key === 'ArrowUp' && tr.previousElementSibling) tb.insertBefore(tr, tr.previousElementSibling);
+    if (e.key === 'ArrowDown' && tr.nextElementSibling) tb.insertBefore(tr.nextElementSibling, tr);
+    h.focus();
+  });
+  form.addEventListener('submit', () => {
+    [...tb.rows].forEach((tr, i) => { tr.querySelector('input.pos').value = i; });
+  });
+})();
+"#;
+
+fn form_row(i: usize, action: Option<Action>, name: &str, cond: &str) -> Markup {
     html! {
         tr {
-            td { input type="text" name=(format!("pos.{i}")) value=(pos) size="3"; }
+            td {
+                button.handle type="button" title="Drag to reorder" aria-label="Reorder rule" { "⠿" }
+                input.pos type="hidden" name=(format!("pos.{i}")) value=(i);
+            }
             td {
                 select name=(format!("action.{i}")) {
                     @for a in [Action::Show, Action::Hide, Action::Tag] {
