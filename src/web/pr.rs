@@ -6,7 +6,7 @@ use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Redirect, Response};
 use maud::{Markup, PreEscaped, html};
 
-use super::{Local, S, ago, local_cell, page, review_badge};
+use super::{Local, S, ago, ignore_button, local_cell, page, review_badge};
 use crate::prpage::{self, PrPage, Thread, parse_patch, thread_anchor};
 use crate::store::now;
 
@@ -46,7 +46,10 @@ fn render(app: &crate::app::App, repo: &str, number: i64, p: Option<PrPage>, err
             }
             " "
             @if let Some(p) = &p { span.muted { "Fetched " (ago(now - p.fetched_at)) " ago" } }
-            @if let Some(it) = item { div style="display:inline-block; margin-left:12px" { (local_cell(it, &local)) } }
+            @if let Some(it) = item {
+                " " (ignore_button(it, &href(repo, number)))
+                div style="display:inline-block; margin-left:12px" { (local_cell(it, &local)) }
+            }
             @if let Some(e) = &err { div.bad { "Fetching from GitHub failed: " (e) } }
         }
     };

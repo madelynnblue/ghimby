@@ -105,10 +105,12 @@ fn review_badge(it: &Item) -> Markup {
     }
 }
 
-fn ignore_button(it: &Item) -> Markup {
+/// `back` is the local path to return to afterwards.
+fn ignore_button(it: &Item, back: &str) -> Markup {
     let ignored = matches!(it.get("ignored"), Value::Bool(true));
     html! {
-        form method="post" action=(format!("/item/{}/ignore", it.id)) {
+        form method="post" action=(format!("/item/{}/ignore", it.id)) style="display:inline" {
+            input type="hidden" name="back" value=(back);
             @if ignored {
                 input type="hidden" name="undo" value="1";
                 button title="Stop setting the ignored field on this item" { "Unignore" }
@@ -254,7 +256,7 @@ fn item_rows(items: &[(&Item, Decision)], limit: usize, now: i64, local: &Local)
                     td.nowrap.muted { (str_field(it, "reason")) }
                     td.nowrap.muted { a href=(format!("/item/{}", it.id)) title="Why?" { (ago(now - updated(it))) } }
                     td style="max-width:220px" { (local_cell(it, local)) }
-                    td { (ignore_button(it)) }
+                    td { (ignore_button(it, "/")) }
                 }
             }
         }
@@ -706,6 +708,7 @@ async fn open_item(State(app): S, Path(id): Path<String>) -> Response {
 #[derive(Deserialize)]
 struct IgnoreForm {
     undo: Option<String>,
+    back: Option<String>,
 }
 
 async fn ignore_item(State(app): S, Path(id): Path<String>, Form(f): Form<IgnoreForm>) -> Response {
@@ -718,7 +721,11 @@ async fn ignore_item(State(app): S, Path(id): Path<String>, Form(f): Form<Ignore
         .set_ignored(&it.url, &it.label, f.undo.is_none())
         .and_then(|()| app.rebuild_items());
     match res {
-        Ok(()) => Redirect::to("/").into_response(),
+        Ok(()) => {
+            // Only same-site paths, so the form can't redirect elsewhere.
+            let back = f.back.filter(|b| b.starts_with('/') && !b.starts_with("//"));
+            Redirect::to(back.as_deref().unwrap_or("/")).into_response()
+        }
         Err(e) => (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     }
 }
