@@ -44,6 +44,12 @@ pub const FIELDS: &[FieldDoc] = &[
     FieldDoc { name: "requested_for_me", help: "A review is currently requested from you by name (not via a team)" },
     FieldDoc { name: "reviewed_by_me", help: "You have submitted a review" },
     FieldDoc {
+        name: "review_decision",
+        help: "approved, changes_requested, review_required, or none. GitHub's decision under branch protection, else from each reviewer's latest approve/request-changes review",
+    },
+    FieldDoc { name: "approved_by", help: "Logins whose latest opinionated review approves (lowercase)" },
+    FieldDoc { name: "changes_requested_by", help: "Logins whose latest opinionated review requests changes (lowercase)" },
+    FieldDoc {
         name: "new_since_my_review",
         help: "Since your latest review: a new commit or force-push, a comment or review by another human, or a review re-request for you or your teams",
     },
@@ -180,7 +186,10 @@ impl GitHub {
             .send()
             .await?;
         let status = resp.status();
-        let body: J = resp.json().await?;
+        let text = resp.text().await?;
+        let Ok(body) = serde_json::from_str::<J>(&text) else {
+            bail!("graphql: {status}: {}", text.chars().take(200).collect::<String>());
+        };
         if !status.is_success() {
             bail!("graphql: {status}: {body}");
         }
@@ -420,6 +429,29 @@ impl GitHub {
     }
 }
 
+/// The PR's review decision and who currently approves or requests changes.
+/// Without branch protection GitHub's reviewDecision is null, so derive it from latest reviews.
+fn review_decision(pr: &J) -> (&'static str, Vec<String>, Vec<String>) {
+    let (mut approved, mut changes) = (Vec::new(), Vec::new());
+    for r in pr["latestOpinionatedReviews"]["nodes"].as_array().into_iter().flatten() {
+        let Some(l) = login(&r["author"]) else { continue };
+        match r["state"].as_str() {
+            Some("APPROVED") => approved.push(l),
+            Some("CHANGES_REQUESTED") => changes.push(l),
+            _ => {}
+        }
+    }
+    let decision = match pr["reviewDecision"].as_str() {
+        Some("APPROVED") => "approved",
+        Some("CHANGES_REQUESTED") => "changes_requested",
+        Some("REVIEW_REQUIRED") => "review_required",
+        _ if !changes.is_empty() => "changes_requested",
+        _ if !approved.is_empty() => "approved",
+        _ => "none",
+    };
+    (decision, approved, changes)
+}
+
 /// Whether `me` reviewed, and whether anything new happened since `me`'s latest review.
 fn review_activity(pr: &J, me: &str, my_teams: &[String]) -> (bool, bool) {
     let Some(last) = pr["myReviews"]["nodes"]
@@ -591,6 +623,10 @@ impl Source for GitHub {
                     it.set("requested_for_me", Value::Bool(users.contains(&me)));
                     it.set("requested_users", Value::strs(users));
                     it.set("requested_teams", Value::strs(rteams));
+                    let (decision, approved, changes) = review_decision(s);
+                    it.set("review_decision", Value::Str(decision.into()));
+                    it.set("approved_by", Value::strs(approved));
+                    it.set("changes_requested_by", Value::strs(changes));
                     let (reviewed, new) = review_activity(s, &me, &teams);
                     it.set("reviewed_by_me", Value::Bool(reviewed));
                     it.set("new_since_my_review", Value::Bool(new));
@@ -615,6 +651,8 @@ __typename
   labels(first: 30) { nodes { name } }
   files(first: 100) { nodes { path } }
   reviewRequests(first: 30) { nodes { requestedReviewer { __typename ... on User { login } ... on Team { combinedSlug } } } }
+  reviewDecision
+  latestOpinionatedReviews(first: 30) { nodes { state author { login } } }
   myReviews: reviews(last: 5, author: $ME) { nodes { submittedAt } }
   timelineItems(last: 100, itemTypes: [PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT, ISSUE_COMMENT, PULL_REQUEST_REVIEW, REVIEW_REQUESTED_EVENT]) {
     nodes {
@@ -675,6 +713,20 @@ mod tests {
         ] {
             assert_eq!(act(json!([ev])), (true, true), "{ev}");
         }
+    }
+
+    #[test]
+    fn decision() {
+        let pr = json!({ "reviewDecision": null, "latestOpinionatedReviews": { "nodes": [
+            { "state": "APPROVED", "author": { "login": "A" } },
+            { "state": "CHANGES_REQUESTED", "author": { "login": "b" } },
+        ] } });
+        assert_eq!(review_decision(&pr), ("changes_requested", vec!["a".into()], vec!["b".into()]));
+        let pr = json!({ "reviewDecision": "REVIEW_REQUIRED", "latestOpinionatedReviews": { "nodes": [
+            { "state": "APPROVED", "author": { "login": "a" } },
+        ] } });
+        assert_eq!(review_decision(&pr).0, "review_required");
+        assert_eq!(review_decision(&json!({})).0, "none");
     }
 
     #[test]

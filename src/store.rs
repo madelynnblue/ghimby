@@ -33,6 +33,9 @@ CREATE TABLE checkouts (
 CREATE TABLE ignored (url TEXT PRIMARY KEY, label TEXT NOT NULL, created_at INTEGER NOT NULL);
 "#, r#"
 CREATE TABLE pr_pages (key TEXT PRIMARY KEY, json TEXT NOT NULL, updated_at INTEGER NOT NULL, fetched_at INTEGER NOT NULL);
+"#, r#"
+-- The subject query gained updatedAt and review decisions; re-fetch cached subjects.
+UPDATE subjects SET fetched_at = 0;
 "#];
 
 #[derive(Clone)]

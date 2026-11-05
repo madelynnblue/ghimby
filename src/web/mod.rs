@@ -90,6 +90,21 @@ fn local_cell(it: &Item, local: &Local) -> Markup {
     }
 }
 
+/// A pill for a PR's current approval or requested changes, naming who in the tooltip.
+fn review_badge(it: &Item) -> Markup {
+    let who = |f: &str| match it.get(f) {
+        Value::List(xs) => xs.iter().filter_map(|x| if let Value::Str(s) = x { Some(s.as_str()) } else { None }).collect::<Vec<_>>().join(", "),
+        _ => String::new(),
+    };
+    match str_field(it, "review_decision") {
+        "approved" => html! { span.tag.good title=(format!("Approved by {}", who("approved_by"))) { "✓ approved" } },
+        "changes_requested" => {
+            html! { span.tag.bad title=(format!("Changes requested by {}", who("changes_requested_by"))) { "✗ changes requested" } }
+        }
+        _ => html! {},
+    }
+}
+
 fn ignore_button(it: &Item) -> Markup {
     let ignored = matches!(it.get("ignored"), Value::Bool(true));
     html! {
@@ -116,6 +131,7 @@ table { border-collapse: collapse; width: 100%; }
 td, th { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
 th { color: var(--muted); font-weight: 500; }
 .muted { color: var(--muted); } .bad { color: var(--bad); } .good { color: var(--good); }
+.tag.good { border-color: var(--good); } .tag.bad { border-color: var(--bad); }
 .tag { display: inline-block; font-size: 12px; padding: 0 6px; border: 1px solid var(--border); border-radius: 10px; margin-right: 4px; }
 .card { background: var(--card); border: 1px solid var(--border); border-radius: 6px; padding: 8px 12px; margin: 8px 0; }
 details > summary { cursor: pointer; padding: 4px 0; }
@@ -230,6 +246,7 @@ fn item_rows(items: &[(&Item, Decision)], limit: usize, now: i64, local: &Local)
                             _ => (it.title),
                         }
                         " "
+                        (review_badge(it))
                         @for t in &d.tags { span.tag { (t) } }
                         @if !d.errors.is_empty() { span.tag.bad title=(d.errors.join("\n")) { "rule error" } }
                     }

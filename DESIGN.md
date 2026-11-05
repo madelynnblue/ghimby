@@ -36,9 +36,9 @@ Hidden items stay viewable in the app with the rule that hid them.
 
 | field | type |
 |---|---|
-| `repo`, `author`, `title`, `reason`, `state` | string |
+| `repo`, `author`, `title`, `reason`, `state`, `review_decision` | string |
 | `draft`, `ignored`, `requested_for_me`, `reviewed_by_me`, `new_since_my_review` | bool |
-| `labels`, `paths`, `requested_teams`, `requested_users` | list of strings |
+| `labels`, `paths`, `requested_teams`, `requested_users`, `approved_by`, `changes_requested_by` | list of strings |
 | `changed_files`, `additions`, `deletions` | int |
 | `updated`, `created`, `last_activity` | timestamp (use `age(updated) > 14d`) |
 | `codeowners` | per changed file, the owners of its last-matching CODEOWNERS line |
@@ -48,6 +48,11 @@ a comment or review by another human, or a review re-request for you or one of y
 
 `ignored` is set by the Ignore button on an inbox row (keyed by the item's URL, so it survives
 re-syncs). Ignoring only sets the field; the `hide "ignored"` rule is what hides it.
+
+`review_decision` is `approved`, `changes_requested`, `review_required` or `none`: GitHub's
+`reviewDecision` where branch protection requires reviews, otherwise derived from each reviewer's
+latest approve or request-changes review (any request for changes wins). The inbox shows approved and
+changes-requested PRs as a badge next to the title, naming the reviewers on hover.
 
 A comparison against a field the item doesn't have (e.g. `state` on a release notification) is false.
 

@@ -6,7 +6,7 @@ use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Redirect, Response};
 use maud::{Markup, PreEscaped, html};
 
-use super::{Local, S, ago, local_cell, page};
+use super::{Local, S, ago, local_cell, page, review_badge};
 use crate::prpage::{self, PrPage, Thread, parse_patch, thread_anchor};
 use crate::store::now;
 
@@ -68,6 +68,7 @@ fn render(app: &crate::app::App, repo: &str, number: i64, p: Option<PrPage>, err
             p.muted {
                 span.tag class=(state_class(&p.state)) { (p.state) }
                 @if p.draft { span.tag { "draft" } }
+                @if let Some(it) = item { (review_badge(it)) }
                 b { (p.author) } " wants to merge " code { (p.head) } " into " code { (p.base) }
                 " · opened " (ago(now - p.created)) " ago · "
                 span.good { "+" (p.additions) } " " span.bad { "−" (p.deletions) }
