@@ -1,4 +1,5 @@
 mod app;
+mod changes;
 mod checkout;
 mod codeowners;
 mod glob;
@@ -32,10 +33,12 @@ async fn main() -> Result<()> {
     let args = Args::parse();
     let store = store::Store::open(&args.db)?;
     let github = Arc::new(source::github::GitHub::new(store.clone()));
+    let changes = changes::Changes::default();
     let app = Arc::new(app::App {
         sources: vec![github.clone()],
         github,
-        checkouts: Default::default(),
+        checkouts: checkout::Checkouts::new(changes.clone()),
+        changes,
         store,
         items: Default::default(),
         status: Default::default(),

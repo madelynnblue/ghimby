@@ -36,7 +36,7 @@ impl Value {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Item {
     pub id: String,
     pub url: String,

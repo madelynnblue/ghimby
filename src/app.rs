@@ -8,6 +8,7 @@ use anyhow::{Result, bail};
 use futures::StreamExt;
 use tokio::sync::Notify;
 
+use crate::changes::Changes;
 use crate::checkout::{self, Checkouts};
 use crate::item::{Item, Value};
 use crate::source::github::GitHub;
@@ -31,6 +32,7 @@ pub struct App {
     pub kick: Notify,
     pub github: Arc<GitHub>,
     pub checkouts: Checkouts,
+    pub changes: Changes,
 }
 
 impl App {
@@ -60,7 +62,11 @@ impl App {
         for it in &mut all {
             it.set("ignored", Value::Bool(ignored.contains(&it.url)));
         }
-        *self.items.write().unwrap() = Arc::new(all);
+        let mut items = self.items.write().unwrap();
+        if **items != all {
+            *items = Arc::new(all);
+            self.changes.bump();
+        }
         Ok(())
     }
 
@@ -73,6 +79,7 @@ impl App {
             it.set("ignored", Value::Bool(ignored));
         }
         *items = Arc::new(next);
+        self.changes.bump();
         Ok(())
     }
 
@@ -86,6 +93,7 @@ impl App {
             s.running = true;
             s.message = "starting".into();
         }
+        let before = (format!("{:?}", self.store.checkouts().ok()), self.status.lock().unwrap().last_error.clone());
         let mut err = None;
         for src in &self.sources {
             if let Err(e) = src.sync(&self.status).await {
@@ -101,18 +109,25 @@ impl App {
         if let Err(e) = self.sweep_checkouts().await {
             err.get_or_insert(format!("cleaning up checkouts: {e:#}"));
         }
-        let mut s = self.status.lock().unwrap();
-        s.running = false;
-        s.message.clear();
-        match err {
-            Some(e) => {
-                tracing::warn!("sync failed: {e}");
-                s.last_error = Some(e);
+        {
+            let mut s = self.status.lock().unwrap();
+            s.running = false;
+            s.message.clear();
+            match err {
+                Some(e) => {
+                    tracing::warn!("sync failed: {e}");
+                    s.last_error = Some(e);
+                }
+                None => {
+                    s.last_error = None;
+                    s.last_ok = Some(now());
+                }
             }
-            None => {
-                s.last_error = None;
-                s.last_ok = Some(now());
-            }
+        }
+        // Item changes bump on rebuild; also reload pages for sync errors and checkout cleanup.
+        let after = (format!("{:?}", self.store.checkouts().ok()), self.status.lock().unwrap().last_error.clone());
+        if before != after {
+            self.changes.bump();
         }
     }
 

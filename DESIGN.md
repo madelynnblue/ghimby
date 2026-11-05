@@ -97,12 +97,25 @@ rules engine applies.
 ### Pages
 
 - **Inbox**: shown items (with tags), then a collapsed hidden section grouped by the rule that hid each.
-  Each row has an Ignore/Unignore button.
+  Each row has an Ignore/Unignore button. The page stays current on its own: see Live updates.
 - **Rules**: textarea with parse errors inline, a form view of the same rules, and a dry-run showing
   which items would change bucket before saving.
 - **Settings**: token source, poll interval.
 - **PR** (`/pr/<owner>/<repo>/<N>`, linked from each PR title): read-only description, conversation,
   and the diff with review threads inline. See below.
+
+## Live updates
+
+The server keeps a version counter, bumped when items actually change after a sync (compared, not
+just rebuilt), on Ignore, on rules save, when a checkout job starts, progresses or ends, and when a
+sync's error or checkout cleanup changes. `/events` is a Server-Sent Events stream that sends the
+version on change and the sync status line when it changes.
+
+The inbox embeds its version. On a newer one it reloads only when that can't move things under the
+pointer: right away if the tab is hidden or the window is unfocused, otherwise the moment the window
+regains focus. Never while the pointer is on a link, button or summary; it waits until the pointer
+moves off. Open hidden groups and the scroll position survive the reload. The status line updates in
+place without a reload.
 
 ## PR page
 

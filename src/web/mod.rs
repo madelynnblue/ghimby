@@ -1,10 +1,12 @@
 //! Server-rendered web UI.
 
 use std::collections::{BTreeMap, HashMap};
+use std::convert::Infallible;
 use std::sync::Arc;
 
 use axum::extract::{Path, Query, Request, State};
 use axum::middleware::{self, Next};
+use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Router};
@@ -26,6 +28,7 @@ pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/", get(inbox))
         .route("/sync", post(sync))
+        .route("/events", get(events))
         .route("/item/{id}", get(item_page))
         .route("/rules", get(rules_page).post(rules_text))
         .route("/rules/form", post(rules_form))
@@ -268,7 +271,7 @@ fn status_bar(app: &App) -> Markup {
     let s = app.status.lock().unwrap().clone();
     let now = now();
     html! {
-        div.card {
+        div.card #status {
             form method="post" action="/sync" style="display:inline" { button { "Sync now" } }
             " "
             @if s.running { span { "Syncing: " (s.message) } }
@@ -288,6 +291,8 @@ fn compile_current(app: &App) -> Result<Compiled, Markup> {
 
 async fn inbox(State(app): S) -> Markup {
     let now = now();
+    // Read before the items so a change in between still triggers a reload.
+    let version = app.changes.version();
     let local = Local::load(&app);
     let items = app.items();
     let compiled = compile_current(&app);
@@ -321,18 +326,90 @@ async fn inbox(State(app): S) -> Markup {
             @if let Err(m) = &compiled { (m) }
             @if errored > 0 { div.card.bad { (errored) " item(s) hit rule errors; hover the \"rule error\" tag for details." } }
             h2 { "Shown " span.muted { "(" (shown.len()) ")" } }
-            @if !local.running.is_empty() { meta http-equiv="refresh" content="2"; }
             (item_rows(&shown, usize::MAX, now, &local))
             h2 { "Hidden " span.muted { "(" (hidden.iter().map(|(_, v)| v.len()).sum::<usize>()) ")" } }
             @for (rule, v) in &hidden {
-                details {
+                details data-k=(rule) {
                     summary { "by " b { (rule) } " " span.muted { "(" (v.len()) ")" } }
                     (item_rows(v, 300, now, &local))
                 }
             }
+            script { (PreEscaped(LIVE_JS.replace("VERSION", &version.to_string()))) }
         },
     )
 }
+
+/// Pushes "version" when the inbox changes and "status" when the sync status line changes.
+async fn events(State(app): S) -> impl IntoResponse {
+    let rx = app.changes.subscribe();
+    let tick = tokio::time::interval(std::time::Duration::from_secs(1));
+    let stream = futures::stream::unfold((app, rx, tick, None::<u64>, String::new()), |(app, mut rx, mut tick, sent, status)| async move {
+        loop {
+            let v = *rx.borrow_and_update();
+            if sent != Some(v) {
+                let ev = Event::default().event("version").data(v.to_string());
+                return Some((Ok::<_, Infallible>(ev), (app, rx, tick, Some(v), status)));
+            }
+            let now_status = status_bar(&app).into_string().replace('\n', " ");
+            if now_status != status {
+                let ev = Event::default().event("status").data(now_status.clone());
+                return Some((Ok(ev), (app, rx, tick, sent, now_status)));
+            }
+            tokio::select! {
+                r = rx.changed() => r.ok()?,
+                _ = tick.tick() => {}
+            }
+        }
+    });
+    Sse::new(stream).keep_alive(KeepAlive::default())
+}
+
+/// Reloads the inbox when it changes, but only while the window is in the background or right as it
+/// regains focus, never while the pointer is on a link or button. Keeps scroll and open groups.
+const LIVE_JS: &str = r#"
+(() => {
+  const KEY = "ghimby-inbox";
+  try {
+    const s = JSON.parse(sessionStorage.getItem(KEY) || "null");
+    sessionStorage.removeItem(KEY);
+    if (s) {
+      document.querySelectorAll("details[data-k]").forEach(d => { if (s.open.includes(d.dataset.k)) d.open = true; });
+      window.scrollTo(0, s.y);
+    }
+  } catch (e) {}
+  const version = "VERSION";
+  let stale = false, overLink = false;
+  const interactive = "a, button, summary, input, select, textarea, label";
+  document.addEventListener("mouseover", e => { overLink = !!e.target.closest(interactive); maybe(false); });
+  document.documentElement.addEventListener("mouseleave", () => { overLink = false; maybe(false); });
+  function reload() {
+    try {
+      const open = [...document.querySelectorAll("details[data-k]")].filter(d => d.open).map(d => d.dataset.k);
+      sessionStorage.setItem(KEY, JSON.stringify({ open, y: window.scrollY }));
+    } catch (e) {}
+    location.reload();
+  }
+  // focusing: the window just came forward, the one moment a focused page may reload.
+  function maybe(focusing) {
+    if (!stale) return;
+    if (document.hidden) return reload();
+    if (overLink) return;
+    if (focusing || !document.hasFocus()) reload();
+  }
+  window.addEventListener("focus", () => maybe(true));
+  document.addEventListener("visibilitychange", () => maybe(!document.hidden));
+  const es = new EventSource("/events");
+  es.addEventListener("version", e => { if (e.data !== version) { stale = true; maybe(false); } });
+  es.addEventListener("status", e => {
+    const el = document.getElementById("status");
+    if (!el || el.matches(":hover")) return;
+    const t = document.createElement("template");
+    t.innerHTML = e.data;
+    const next = t.content.firstElementChild;
+    if (next && next.innerHTML !== el.innerHTML) el.innerHTML = next.innerHTML;
+  });
+})();
+"#;
 
 async fn sync(State(app): S) -> Redirect {
     app.kick.notify_one();
@@ -561,6 +638,7 @@ fn submit_rules(app: &App, text: String, op: &str) -> Response {
         if let Err(e) = app.store.save_rules(&text) {
             return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
         }
+        app.changes.bump();
         return Redirect::to("/rules?saved=1").into_response();
     }
     page("Rules", rules_editor(app, &text, Some(pv), false)).into_response()
@@ -742,6 +820,7 @@ async fn remove_checkout(State(app): S, Form(f): Form<RemoveForm>) -> Response {
         c.status = format!("not removed: {e:#}");
         let _ = app.store.put_checkout(&c);
     }
+    app.changes.bump();
     Redirect::to("/settings").into_response()
 }
 

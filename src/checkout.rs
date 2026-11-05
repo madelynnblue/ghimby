@@ -8,15 +8,16 @@ use std::time::Duration;
 
 use anyhow::{Context, Result, anyhow, bail};
 
+use crate::changes::Changes;
 use crate::store::{Checkout, LocalRepo, Store, now};
 
 const WORKTREE_DIR: &str = ".ghimby/worktrees";
 
-#[derive(Default)]
 pub struct Checkouts {
     /// In-progress messages, keyed by "owner/repo#N".
     pub running: Mutex<HashMap<String, String>>,
     locks: Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+    changes: Changes,
 }
 
 pub fn key(repo: &str, number: i64) -> String {
@@ -183,12 +184,17 @@ fn shell_quote(s: &str) -> String {
 }
 
 impl Checkouts {
+    pub fn new(changes: Changes) -> Checkouts {
+        Checkouts { running: Default::default(), locks: Default::default(), changes }
+    }
+
     fn lock(&self, k: &str) -> Arc<tokio::sync::Mutex<()>> {
         self.locks.lock().unwrap().entry(k.to_string()).or_default().clone()
     }
 
     fn progress(&self, k: &str, msg: &str) {
         self.running.lock().unwrap().insert(k.to_string(), msg.to_string());
+        self.changes.bump();
     }
 
     /// Creates or updates the PR's worktree and opens it in the editor. The outcome is stored as
@@ -218,6 +224,7 @@ impl Checkouts {
                 tracing::warn!("saving checkout status: {e:#}");
             }
         }
+        self.changes.bump();
     }
 
     async fn find_or_clone(&self, store: &Store, repo: &str, k: &str) -> Result<PathBuf> {
