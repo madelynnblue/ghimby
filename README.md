@@ -24,7 +24,7 @@ hide "finished" if state != "open"
 hide "ignored" if ignored
 hide "bots" if author in ["dependabot", "renovate"]
 hide "already reviewed" if reviewed_by_me and not new_since_my_review
-tag "draft" if draft
+hide "draft" if draft
 show "direct" if reason in ["mention", "author", "assign"] or requested_for_me
 show "storage" if owned_by("@acme/storage", max_owners: 2)
 default hide

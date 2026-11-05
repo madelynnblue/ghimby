@@ -304,8 +304,10 @@ impl GitHub {
             let updated = jts(&n["updated_at"]).unwrap_or(0);
             let stale = match cached.get(&r.key()) {
                 None => true,
+                // Drafts re-fetch every sync so one marked ready leaves the draft rule promptly.
                 Some((j, fetched)) => {
                     updated > *fetched
+                        || j["prState"] == "OPEN" && j["isDraft"] == true
                         || (j["prState"] == "OPEN" || j["issueState"] == "OPEN")
                             && now - fetched > refresh
                 }

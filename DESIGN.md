@@ -25,7 +25,7 @@ hide "finished"         if state != "open"
 hide "ignored"          if ignored
 hide "bots"             if author in ["dependabot", "acme-ci"]
 hide "already reviewed" if reviewed_by_me and not new_since_my_review
-tag  "draft"            if draft
+hide "draft"           if draft
 show "storage"           if owned_by("@acme/storage", max_owners: 2)
 default hide
 ```
@@ -53,6 +53,10 @@ re-syncs). Ignoring only sets the field; the `hide "ignored"` rule is what hides
 `reviewDecision` where branch protection requires reviews, otherwise derived from each reviewer's
 latest approve or request-changes review (any request for changes wins). The inbox shows approved and
 changes-requested PRs as a badge next to the title, naming the reviewers on hover.
+
+PR details refresh when a newer notification arrives, every `subject_refresh_secs` for open PRs,
+and on every sync for open drafts, so a draft marked ready for review leaves the `draft` rule within
+one poll.
 
 A comparison against a field the item doesn't have (e.g. `state` on a release notification) is false.
 

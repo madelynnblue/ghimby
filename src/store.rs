@@ -11,7 +11,7 @@ hide "finished" if state != "open"
 hide "ignored" if ignored
 hide "bots" if author in ["dependabot", "renovate"]
 hide "already reviewed" if reviewed_by_me and not new_since_my_review
-tag "draft" if draft
+hide "draft" if draft
 default show
 "#;
 
