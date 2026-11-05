@@ -18,6 +18,7 @@ use crate::store::{Store, now};
 pub const API: &str = "https://api.github.com";
 const SUBJECT_BATCH: usize = 25;
 const SUBJECT_CONCURRENCY: usize = 4;
+const IDENTITY_REFRESH_SECS: i64 = 3600;
 const CODEOWNERS_BATCH: usize = 20;
 
 pub const FIELDS: &[FieldDoc] = &[
@@ -234,7 +235,17 @@ impl GitHub {
         Ok(())
     }
 
+    /// Login and teams rarely change, so they're re-fetched hourly or when the token changes.
     async fn sync_identity(&self, token: &str) -> Result<()> {
+        let tag = {
+            use std::hash::{Hash, Hasher};
+            let mut h = std::collections::hash_map::DefaultHasher::new();
+            token.hash(&mut h);
+            format!("{:x}@{}", h.finish(), now() / IDENTITY_REFRESH_SECS)
+        };
+        if self.store.setting("github.identity_tag")? == tag && !self.store.setting("github.login")?.is_empty() {
+            return Ok(());
+        }
         let user: J = self.get(token, &format!("{API}/user"), HeaderMap::new()).await?.json().await?;
         let me = login(&user).ok_or_else(|| anyhow!("no login in /user"))?;
         let teams: Vec<String> = self
@@ -253,6 +264,7 @@ impl GitHub {
         self.store.set_setting("github.login", &me)?;
         self.store
             .set_setting("github.teams", &serde_json::to_string(&teams)?)?;
+        self.store.set_setting("github.identity_tag", &tag)?;
         Ok(())
     }
 
@@ -292,6 +304,7 @@ impl GitHub {
             .collect();
         let now = now();
         let mut want = Vec::new();
+        let mut drafts = Vec::new();
         let mut seen = HashSet::new();
         for n in self.store.notifications()? {
             let n: J = serde_json::from_str(&n)?;
@@ -304,16 +317,28 @@ impl GitHub {
             let updated = jts(&n["updated_at"]).unwrap_or(0);
             let stale = match cached.get(&r.key()) {
                 None => true,
-                // Drafts re-fetch every sync so one marked ready leaves the draft rule promptly.
                 Some((j, fetched)) => {
+                    if j["prState"] == "OPEN" && j["isDraft"] == true {
+                        drafts.push(r.clone());
+                    }
                     updated > *fetched
-                        || j["prState"] == "OPEN" && j["isDraft"] == true
                         || (j["prState"] == "OPEN" || j["issueState"] == "OPEN")
                             && now - fetched > refresh
                 }
             };
             if stale {
                 want.push(r);
+            }
+        }
+        // Check drafts every sync with a light query so one marked ready leaves the draft rule promptly.
+        drafts.retain(|d| !want.contains(d));
+        if !drafts.is_empty() {
+            let prs: Vec<(String, i64)> = drafts.iter().map(|d| (format!("{}/{}", d.owner, d.repo), d.number as i64)).collect();
+            let flags = self.pr_flags(token, &prs).await?;
+            for (d, pr) in drafts.into_iter().zip(&prs) {
+                if flags.get(&format!("{}#{}", pr.0, pr.1)).is_none_or(|(state, draft)| state != "OPEN" || !draft) {
+                    want.push(d);
+                }
             }
         }
         let keep: HashSet<String> = seen.iter().map(SubjectRef::key).collect();
@@ -392,26 +417,32 @@ impl GitHub {
 
     /// Current state (OPEN, CLOSED, MERGED) of each PR, keyed by "owner/repo#N".
     pub async fn pr_states(&self, prs: &[(String, i64)]) -> Result<HashMap<String, String>> {
-        let mut out = HashMap::new();
         if prs.is_empty() {
-            return Ok(out);
+            return Ok(HashMap::new());
         }
         let token = self.token().await?;
+        Ok(self.pr_flags(&token, prs).await?.into_iter().map(|(k, (state, _))| (k, state)).collect())
+    }
+
+    /// State and draft flag of each PR, keyed by "owner/repo#N".
+    async fn pr_flags(&self, token: &str, prs: &[(String, i64)]) -> Result<HashMap<String, (String, bool)>> {
+        let mut out = HashMap::new();
         for chunk in prs.chunks(50) {
             let mut q = String::from("query {");
             for (i, (repo, n)) in chunk.iter().enumerate() {
                 let (o, r) = repo.split_once('/').unwrap_or((repo, ""));
                 q += &format!(
-                    " p{i}: repository(owner: {}, name: {}) {{ pullRequest(number: {n}) {{ state }} }}",
+                    " p{i}: repository(owner: {}, name: {}) {{ pullRequest(number: {n}) {{ state isDraft }} }}",
                     serde_json::to_string(o)?,
                     serde_json::to_string(r)?,
                 );
             }
             q.push('}');
-            let body = self.graphql(&token, &q).await?;
+            let body = self.graphql(token, &q).await?;
             for (i, (repo, n)) in chunk.iter().enumerate() {
-                if let Some(s) = body["data"][format!("p{i}")]["pullRequest"]["state"].as_str() {
-                    out.insert(format!("{repo}#{n}"), s.to_string());
+                let pr = &body["data"][format!("p{i}")]["pullRequest"];
+                if let Some(s) = pr["state"].as_str() {
+                    out.insert(format!("{repo}#{n}"), (s.to_string(), pr["isDraft"] == true));
                 }
             }
         }
@@ -526,6 +557,7 @@ impl Source for GitHub {
 
     fn reset_sync(&self) -> Result<()> {
         self.store.clear_notifications()?;
+        self.store.set_setting("github.identity_tag", "")?;
         self.store.set_setting("github.notifications_since", "")
     }
 

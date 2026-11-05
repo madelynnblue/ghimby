@@ -191,7 +191,12 @@ impl App {
         }
     }
 
+    /// Cleanup isn't urgent, so it checks GitHub at most hourly.
     async fn sweep_checkouts(&self) -> Result<()> {
+        const KEY: &str = "checkouts_swept_at";
+        if now() - self.store.setting(KEY)?.parse::<i64>().unwrap_or(0) < 3600 {
+            return Ok(());
+        }
         let prs: Vec<(String, i64)> = self
             .store
             .checkouts()?
@@ -200,7 +205,8 @@ impl App {
             .map(|c| (c.repo, c.number))
             .collect();
         let states = self.github.pr_states(&prs).await?;
-        checkout::sweep(&self.store, &states).await
+        checkout::sweep(&self.store, &states).await?;
+        self.store.set_setting(KEY, &now().to_string())
     }
 
     /// Clears every source's synced data and starts a fresh sync.

@@ -54,9 +54,10 @@ re-syncs). Ignoring only sets the field; the `hide "ignored"` rule is what hides
 latest approve or request-changes review (any request for changes wins). The inbox shows approved and
 changes-requested PRs as a badge next to the title, naming the reviewers on hover.
 
-PR details refresh when a newer notification arrives, every `subject_refresh_secs` for open PRs,
-and on every sync for open drafts, so a draft marked ready for review leaves the `draft` rule within
-one poll.
+PR details refresh when a newer notification arrives and every `subject_refresh_secs` for open PRs.
+Each sync also checks open drafts with a light state-and-draft query and re-fetches any marked ready
+for review, so it leaves the `draft` rule within one poll. Your login and teams are re-fetched hourly
+or when the token changes.
 
 A comparison against a field the item doesn't have (e.g. `state` on a release notification) is false.
 
@@ -193,7 +194,7 @@ Using git rather than a jj workspace is deliberate: the PR extension expects git
 
 ### Cleanup
 
-A sweep runs after each sync and removes a checkout only when nothing would be lost:
+A sweep runs at most hourly, after a sync, and removes a checkout only when nothing would be lost:
 
 - The PR has been merged or closed for longer than `checkout_cleanup_days` (default 1).
 - The worktree has no uncommitted changes and no commits beyond the last head ghimby checked out.
