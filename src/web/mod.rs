@@ -241,7 +241,7 @@ fn str_field<'a>(it: &'a Item, f: &str) -> &'a str {
 fn item_rows(items: &[(&Item, Decision)], limit: usize, now: i64, local: &Local) -> Markup {
     html! {
         table {
-            tr { th { "" } th { "Title" } th { "Author" } th { "Reason" } th { "Updated" } th { "Local" } th { "" } }
+            tr { th { "" } th { "Title" } th { "Author" } th { "Rule" } th { "Updated" } th { "Local" } th { "" } }
             @for (it, d) in items.iter().take(limit) {
                 tr {
                     td.nowrap { a href=(it.url) target="_blank" { (it.label) } }
@@ -256,7 +256,7 @@ fn item_rows(items: &[(&Item, Decision)], limit: usize, now: i64, local: &Local)
                         @if !d.errors.is_empty() { span.tag.bad title=(d.errors.join("\n")) { "rule error" } }
                     }
                     td.nowrap.muted { (str_field(it, "author")) }
-                    td.nowrap.muted { (str_field(it, "reason")) }
+                    td.nowrap.muted title=(format!("GitHub reason: {}", str_field(it, "reason"))) { (d.rule) }
                     td.nowrap.muted { a href=(format!("/item/{}", it.id)) title="Why?" { (ago(now - updated(it))) } }
                     td style="max-width:220px" { (local_cell(it, local)) }
                     td { (ignore_button(it, "/")) }

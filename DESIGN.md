@@ -26,7 +26,7 @@ hide "ignored"          if ignored
 hide "bots"             if author in ["dependabot", "acme-ci"]
 hide "already reviewed" if reviewed_by_me and not new_since_my_review
 hide "draft"           if draft
-show "storage"           if owned_by("@acme/storage", max_owners: 2)
+show "storage"          if owned_by("@acme/storage", max_owners: 2)
 default hide
 ```
 
