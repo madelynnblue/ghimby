@@ -19,6 +19,9 @@ pub struct PrPage {
     pub author: String,
     pub base: String,
     pub head: String,
+    /// Commit the diff was fetched at, so an approval covers exactly what was shown.
+    #[serde(default)]
+    pub head_oid: String,
     pub created: i64,
     /// GitHub's updatedAt, which moves on commits, comments, and reviews.
     pub updated: i64,
@@ -106,7 +109,7 @@ pub async fn fetch_and_store(gh: &GitHub, store: &Store, repo: &str, number: i64
 }
 
 const QUERY: &str = r#"
-title url state isDraft author { login } baseRefName headRefName createdAt updatedAt bodyHTML additions deletions
+title url state isDraft author { login } baseRefName headRefName headRefOid createdAt updatedAt bodyHTML additions deletions
 comments(last: 100) { totalCount nodes { author { login } createdAt bodyHTML url } }
 reviews(last: 100) { totalCount nodes { author { login } submittedAt state bodyHTML url } }
 reviewThreads(first: 100) {
@@ -221,6 +224,7 @@ async fn fetch(gh: &GitHub, repo: &str, number: i64) -> Result<PrPage> {
         author: author(pr),
         base: s(&pr["baseRefName"]),
         head: s(&pr["headRefName"]),
+        head_oid: s(&pr["headRefOid"]),
         created: jts(&pr["createdAt"]).unwrap_or(0),
         updated: jts(&pr["updatedAt"]).unwrap_or(0),
         body_html: s(&pr["bodyHTML"]),

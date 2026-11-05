@@ -42,6 +42,7 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/checkouts/remove", post(remove_checkout))
         .route("/pr/{owner}/{repo}/{number}", get(pr::show))
         .route("/pr/{owner}/{repo}/{number}/refresh", post(pr::refresh))
+        .route("/pr/{owner}/{repo}/{number}/approve", post(pr::approve))
         .layer(middleware::from_fn(same_origin))
         .with_state(app)
 }

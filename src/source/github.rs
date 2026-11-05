@@ -416,6 +416,25 @@ impl GitHub {
     }
 
     /// Current state (OPEN, CLOSED, MERGED) of each PR, keyed by "owner/repo#N".
+    /// Approves a PR, pinned to `commit` (the head the user reviewed) when known, then
+    /// re-fetches its details so the inbox reflects the review.
+    pub async fn approve(&self, repo: &str, number: i64, commit: &str) -> Result<()> {
+        let token = self.token().await?;
+        let mut body = json!({ "event": "APPROVE" });
+        if !commit.is_empty() {
+            body["commit_id"] = json!(commit);
+        }
+        let url = format!("{API}/repos/{repo}/pulls/{number}/reviews");
+        let resp = self.http.post(&url).bearer_auth(&token).header("accept", "application/vnd.github+json").json(&body).send().await?;
+        if !resp.status().is_success() {
+            let status = resp.status();
+            bail!("{status}: {}", resp.text().await.unwrap_or_default());
+        }
+        let (owner, name) = repo.split_once('/').ok_or_else(|| anyhow!("bad repo {repo}"))?;
+        let r = SubjectRef { owner: owner.into(), repo: name.into(), number: number as u64 };
+        self.fetch_subjects(&token, &self.store.setting("github.login")?, vec![r]).await
+    }
+
     pub async fn pr_states(&self, prs: &[(String, i64)]) -> Result<HashMap<String, String>> {
         if prs.is_empty() {
             return Ok(HashMap::new());

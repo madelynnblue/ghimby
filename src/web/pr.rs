@@ -2,12 +2,14 @@
 
 use std::collections::HashMap;
 
+use axum::Form;
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Redirect, Response};
 use maud::{Markup, PreEscaped, html};
 
 use super::{Local, S, ago, ignore_button, local_cell, page, review_badge};
 use crate::prpage::{self, PrPage, Thread, parse_patch, thread_anchor};
+use crate::item::Value;
 use crate::store::now;
 
 /// Files with longer diffs start collapsed.
@@ -32,6 +34,55 @@ pub async fn refresh(State(app): S, Path((owner, repo, number)): Path<(String, S
     }
 }
 
+#[derive(serde::Deserialize)]
+pub struct ApproveForm {
+    #[serde(default)]
+    commit: String,
+}
+
+pub async fn approve(
+    State(app): S,
+    Path((owner, repo, number)): Path<(String, String, i64)>,
+    Form(f): Form<ApproveForm>,
+) -> Response {
+    let repo = format!("{owner}/{repo}");
+    if let Err(e) = app.github.approve(&repo, number, &f.commit).await {
+        let (p, _) = app.pr_page(&repo, number, false).await;
+        return render(&app, &repo, number, p, Some(format!("approving failed: {e:#}"))).into_response();
+    }
+    if let Err(e) = app.rebuild_items() {
+        tracing::warn!("rebuilding items after approve: {e:#}");
+    }
+    let (p, err) = app.pr_page(&repo, number, true).await;
+    match err {
+        None => Redirect::to(&href(&repo, number)).into_response(),
+        Some(e) => render(&app, &repo, number, p, Some(e)).into_response(),
+    }
+}
+
+/// Approve button for open PRs by others; a note instead once you've approved.
+fn approve_button(app: &crate::app::App, p: &PrPage, item: Option<&crate::item::Item>) -> Markup {
+    let me = app.store.setting("github.login").unwrap_or_default().to_lowercase();
+    if p.state != "open" || p.author.to_lowercase() == me {
+        return html! {};
+    }
+    let approved = item.is_some_and(|it| match it.get("approved_by") {
+        Value::List(xs) => xs.iter().any(|x| matches!(x, Value::Str(s) if s.to_lowercase() == me)),
+        _ => false,
+    });
+    if approved {
+        return html! { span.tag.good { "✓ you approved" } };
+    }
+    let label = format!("{}#{}", p.repo, p.number);
+    html! {
+        form method="post" action=(format!("{}/approve", href(&p.repo, p.number))) style="display:inline"
+            onsubmit=(format!("return confirm('Approve {label} on GitHub?')")) {
+            input type="hidden" name="commit" value=(p.head_oid);
+            button title="Submit an approving review on GitHub for the commit shown here" { "Approve" }
+        }
+    }
+}
+
 fn render(app: &crate::app::App, repo: &str, number: i64, p: Option<PrPage>, err: Option<String>) -> Markup {
     let now = now();
     let label = format!("{repo}#{number}");
@@ -45,7 +96,10 @@ fn render(app: &crate::app::App, repo: &str, number: i64, p: Option<PrPage>, err
                 button title="Fetch this PR from GitHub now" { "Refresh" }
             }
             " "
-            @if let Some(p) = &p { span.muted { "Fetched " (ago(now - p.fetched_at)) " ago" } }
+            @if let Some(p) = &p {
+                (approve_button(app, p, item)) " "
+                span.muted { "Fetched " (ago(now - p.fetched_at)) " ago" }
+            }
             @if let Some(it) = item {
                 " " (ignore_button(it, &href(repo, number)))
                 div style="display:inline-block; margin-left:12px" { (local_cell(it, &local)) }

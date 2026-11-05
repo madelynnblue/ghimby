@@ -134,6 +134,9 @@ threads on lines missing from the patch, sit above their file's diff with the co
   in the notification window. Hidden PRs are fetched when viewed: opening a stale or uncached page
   fetches it first.
 - A Refresh button at the top re-fetches it on demand.
+- Approve (open PRs by others, after a confirm) posts an APPROVE review pinned to the page's
+  `headRefOid`, so it covers exactly the diff shown, then re-fetches the PR. Once you've approved, it
+  shows "you approved" instead.
 
 ## Open a PR locally
 

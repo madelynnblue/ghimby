@@ -50,7 +50,8 @@ reference of every field and function.
 - **Review badges**: approved or changes-requested PRs are marked next to the title.
 - **Ignore**: hide a specific PR from the inbox.
 - **PR page**: click a title for the description, conversation, and diff with review threads inline,
-  cached locally and re-fetched when the PR changes.
+  cached locally and re-fetched when the PR changes. An Approve button submits an approving review for
+  the commit shown.
 - **Open**: check a PR out in its own git worktree (`<clone>/.ghimby/worktrees/pr-<N>`) and open it in
   your editor, linked for VS Code's GitHub Pull Requests extension. Worktrees of merged PRs are cleaned
   up automatically if they have no local changes.
