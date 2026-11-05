@@ -129,8 +129,9 @@ threads on lines missing from the patch, sit above their file's diff with the co
 - Cache: `pr_pages(key, json, updated_at, fetched_at)`. A page is stale when the PR's `updatedAt`
   (the item's `last_activity`, which moves on commits, comments and reviews) is newer than the cached
   one, or a notification arrived after it was fetched.
-- Sync re-fetches every stale cached page, prefetches shown PRs that aren't cached, and drops pages
-  of PRs no longer in the notification window. Viewing a stale or uncached page fetches it first.
+- Sync fetches pages only for shown PRs that are uncached or stale, and drops pages of PRs no longer
+  in the notification window. Hidden PRs are fetched when viewed: opening a stale or uncached page
+  fetches it first.
 - A Refresh button at the top re-fetches it on demand.
 
 ## Open a PR locally

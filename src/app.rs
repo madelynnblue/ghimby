@@ -131,8 +131,7 @@ impl App {
         }
     }
 
-    /// Re-fetches cached PR pages that changed, prefetches shown PRs, and drops pages of PRs
-    /// no longer in the inbox.
+    /// Fetches uncached or stale pages of shown PRs, and drops pages of PRs no longer in the inbox.
     async fn refresh_pr_pages(&self) -> Result<()> {
         let items = self.items();
         let compiled = self.compile(&self.current_rules()?).ok();
@@ -145,11 +144,9 @@ impl App {
             if !keep.insert(key.clone()) {
                 continue;
             }
-            let fetch = match times.get(&key) {
-                Some(t) => prpage::stale(*t, it),
-                None => compiled.as_ref().is_some_and(|c| c.decide(it, now).show),
-            };
-            if fetch {
+            // Hidden PRs are fetched on click by pr_page instead.
+            let shown = compiled.as_ref().is_some_and(|c| c.decide(it, now).show);
+            if shown && times.get(&key).is_none_or(|t| prpage::stale(*t, it)) {
                 let (Value::Str(repo), Value::Int(n)) = (it.get("repo"), it.get("number")) else { continue };
                 want.push((repo.clone(), *n));
             }
