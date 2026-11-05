@@ -99,7 +99,8 @@ fn local_cell(it: &Item, local: &Local) -> Markup {
         }
         @if let Some(msg) = local.running.get(&k) {
             div.muted { (msg) "…" }
-        } @else if let Some(c) = checkout {
+        } @else if let Some(c) = checkout.filter(|c| !matches!(c.status.as_str(), "" | "created" | "updated" | "up to date")) {
+            // Only problems are worth showing; a successful Open speaks for itself.
             div.muted.small title=(c.path) class=[c.status.starts_with("error").then_some("bad")] { (c.status) }
         }
     }
