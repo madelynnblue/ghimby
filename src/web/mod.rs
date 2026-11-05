@@ -105,13 +105,13 @@ fn review_badge(it: &Item) -> Markup {
     }
 }
 
-/// `back` is the local path to return to afterwards.
+/// Ignoring returns to the inbox; unignoring returns to `back`, a local path.
 fn ignore_button(it: &Item, back: &str) -> Markup {
     let ignored = matches!(it.get("ignored"), Value::Bool(true));
     html! {
         form method="post" action=(format!("/item/{}/ignore", it.id)) style="display:inline" {
-            input type="hidden" name="back" value=(back);
             @if ignored {
+                input type="hidden" name="back" value=(back);
                 input type="hidden" name="undo" value="1";
                 button title="Stop setting the ignored field on this item" { "Unignore" }
             } @else {
@@ -716,11 +716,7 @@ async fn ignore_item(State(app): S, Path(id): Path<String>, Form(f): Form<Ignore
     let Some(it) = items.iter().find(|it| it.id == id) else {
         return (axum::http::StatusCode::NOT_FOUND, "no such item").into_response();
     };
-    let res = app
-        .store
-        .set_ignored(&it.url, &it.label, f.undo.is_none())
-        .and_then(|()| app.rebuild_items());
-    match res {
+    match app.set_ignored(&it.url, &it.label, f.undo.is_none()) {
         Ok(()) => {
             // Only same-site paths, so the form can't redirect elsewhere.
             let back = f.back.filter(|b| b.starts_with('/') && !b.starts_with("//"));

@@ -64,6 +64,18 @@ impl App {
         Ok(())
     }
 
+    /// Records an Ignore click and updates items in place, avoiding a full rebuild.
+    pub fn set_ignored(&self, url: &str, label: &str, ignored: bool) -> Result<()> {
+        self.store.set_ignored(url, label, ignored)?;
+        let mut items = self.items.write().unwrap();
+        let mut next = (**items).clone();
+        for it in next.iter_mut().filter(|it| it.url == url) {
+            it.set("ignored", Value::Bool(ignored));
+        }
+        *items = Arc::new(next);
+        Ok(())
+    }
+
     pub fn items(&self) -> Arc<Vec<Item>> {
         self.items.read().unwrap().clone()
     }

@@ -314,6 +314,8 @@ impl GitHub {
                 want.push(r);
             }
         }
+        let keep: HashSet<String> = seen.iter().map(SubjectRef::key).collect();
+        self.store.prune_subjects(&keep)?;
         let total = want.len();
         let batches: Vec<Vec<SubjectRef>> = want.chunks(SUBJECT_BATCH).map(<[_]>::to_vec).collect();
         let mut done = 0;
@@ -529,10 +531,19 @@ impl Source for GitHub {
         let me = self.store.setting("github.login")?;
         let teams: Vec<String> =
             serde_json::from_str(&self.store.setting("github.teams")?).unwrap_or_default();
+        let notifications: Vec<J> =
+            self.store.notifications()?.iter().map(|n| serde_json::from_str(n)).collect::<Result<_, _>>()?;
+        let wanted: HashSet<String> = notifications
+            .iter()
+            .filter_map(|n| SubjectRef::from_api_url(n["subject"]["url"].as_str()?))
+            .map(|r| r.key())
+            .collect();
+        // Parsing is the slow part, so skip subjects no notification refers to.
         let subjects: HashMap<String, J> = self
             .store
             .subjects()?
             .into_iter()
+            .filter(|(k, _, _)| wanted.contains(k))
             .map(|(k, j, _)| (k, serde_json::from_str(&j).unwrap_or(J::Null)))
             .collect();
         let owners: HashMap<String, CodeOwners> = self
@@ -542,8 +553,7 @@ impl Source for GitHub {
             .filter_map(|(r, t, _)| Some((r, CodeOwners::parse(&t?))))
             .collect();
         let mut items = Vec::new();
-        for n in self.store.notifications()? {
-            let n: J = serde_json::from_str(&n)?;
+        for n in notifications {
             let repo = n["repository"]["full_name"].as_str().unwrap_or("").to_string();
             let short = n["repository"]["name"].as_str().unwrap_or("").to_string();
             let subject_url = n["subject"]["url"].as_str().unwrap_or("");

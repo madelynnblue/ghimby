@@ -319,6 +319,19 @@ impl Store {
         Ok(())
     }
 
+    /// Drops cached subjects whose key isn't in `keep`.
+    pub fn prune_subjects(&self, keep: &std::collections::HashSet<String>) -> Result<()> {
+        let mut conn = self.conn.lock().unwrap();
+        let tx = conn.transaction()?;
+        let keys: Vec<String> =
+            tx.prepare("SELECT key FROM subjects")?.query_map([], |r| r.get(0))?.collect::<rusqlite::Result<_>>()?;
+        for k in keys.iter().filter(|k| !keep.contains(*k)) {
+            tx.execute("DELETE FROM subjects WHERE key = ?", [k])?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Returns (json, fetched_at) for every cached subject.
     pub fn subjects(&self) -> Result<Vec<(String, String, i64)>> {
         self.with(|c| {
