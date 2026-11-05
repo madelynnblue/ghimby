@@ -29,7 +29,9 @@ struct Args {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt::init();
+    use std::io::IsTerminal;
+    // No color codes when launchd sends output to a log file.
+    tracing_subscriber::fmt().with_ansi(std::io::stderr().is_terminal()).init();
     let args = Args::parse();
     let store = store::Store::open(&args.db)?;
     let github = Arc::new(source::github::GitHub::new(store.clone()));

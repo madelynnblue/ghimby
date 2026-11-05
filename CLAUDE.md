@@ -12,4 +12,6 @@ Rust web app that filters GitHub notifications with rules stored in SQLite. Desi
 - jj, colocated with git. Remote `origin` is git@github.com:madelynnblue/ghimby.git.
 - Don't commit or push on your own. When a change is done, ask the user whether to commit (offer a
   "Yes, commit" button). Once they confirm, describe it, `jj new`, then push:
-  `jj bookmark set main -r @- && jj git push --bookmark main`
+  `jj bookmark set main -r @- && jj git push --bookmark main`, then deploy with `scripts/deploy.sh`.
+- The deployed service (launchd agent `io.ghimby`) serves on 7880 with its own database. The dev
+  preview on 7878 uses `./ghimby.db`.

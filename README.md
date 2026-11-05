@@ -15,6 +15,18 @@ cargo run -- --db ghimby.db
 Then open http://127.0.0.1:7878. All config (rules, settings, caches) lives in the SQLite file given by
 `--db`. By default it gets a GitHub token from `gh auth token`.
 
+To run it as a background service on macOS instead:
+
+```
+scripts/deploy.sh
+```
+
+This builds a release binary to `~/.local/bin/ghimby` and runs it as a launchd agent at
+http://127.0.0.1:7880. The agent starts at login and restarts if it exits. Its database is
+`~/Library/Application Support/ghimby/ghimby.db`, copied from `./ghimby.db` on first install, and it
+logs to `~/Library/Logs/ghimby.log`. Rerun the script to deploy a new version, and run
+`scripts/uninstall.sh` to remove the agent.
+
 ## Rules
 
 Rules run top to bottom. `show` and `hide` stop at the first match; `tag` adds a label and keeps going.
