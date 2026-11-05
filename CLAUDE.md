@@ -10,5 +10,6 @@ Rust web app that filters GitHub notifications with rules stored in SQLite. Desi
 ## Source control
 
 - jj, colocated with git. Remote `origin` is git@github.com:madelynnblue/ghimby.git.
-- After a change is fully made and committed (described, with `jj new` on top), push it:
+- Don't commit or push on your own. When a change is done, ask the user whether to commit (offer a
+  "Yes, commit" button). Once they confirm, describe it, `jj new`, then push:
   `jj bookmark set main -r @- && jj git push --bookmark main`
