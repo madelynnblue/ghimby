@@ -27,6 +27,8 @@ type S = State<Arc<App>>;
 pub fn router(app: Arc<App>) -> Router {
     Router::new()
         .route("/", get(inbox))
+        .route("/favicon.svg", get(favicon))
+        .route("/favicon.ico", get(|| async { Redirect::permanent("/favicon.svg") }))
         .route("/sync", post(sync))
         .route("/events", get(events))
         .route("/item/{id}", get(item_page))
@@ -42,6 +44,16 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/pr/{owner}/{repo}/{number}/refresh", post(pr::refresh))
         .layer(middleware::from_fn(same_origin))
         .with_state(app)
+}
+
+async fn favicon() -> impl IntoResponse {
+    (
+        [
+            (axum::http::header::CONTENT_TYPE, "image/svg+xml"),
+            (axum::http::header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        include_str!("favicon.svg"),
+    )
 }
 
 /// POSTs run commands on this machine, so reject ones sent by other sites.
@@ -176,6 +188,7 @@ fn page(title: &str, body: Markup) -> Markup {
                 meta charset="utf-8";
                 meta name="viewport" content="width=device-width, initial-scale=1";
                 title { (title) " · ghimby" }
+                link rel="icon" type="image/svg+xml" href="/favicon.svg";
                 style { (PreEscaped(CSS)) }
             }
             body {
