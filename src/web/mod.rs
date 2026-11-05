@@ -107,6 +107,14 @@ fn local_cell(it: &Item, local: &Local) -> Markup {
     }
 }
 
+/// Sorts PRs with a local checkout first.
+fn local_sort(it: &Item, local: &Local) -> &'static str {
+    match crate::prpage::item_key(it) {
+        Some(k) if local.checkouts.contains_key(&k) || local.running.contains_key(&k) => "0",
+        _ => "1",
+    }
+}
+
 /// A pill for a PR's current approval or requested changes, naming who in the tooltip.
 fn review_badge(it: &Item) -> Markup {
     let who = |f: &str| match it.get(f) {
@@ -139,6 +147,10 @@ fn ignore_button(it: &Item, back: &str) -> Markup {
 }
 
 const CSS: &str = r#"
+th[data-sort] { cursor: pointer; user-select: none; white-space: nowrap; }
+th[data-sort]:hover { text-decoration: underline; }
+th.asc::after { content: " ▲"; font-size: 0.8em; }
+th.desc::after { content: " ▼"; font-size: 0.8em; }
 :root { --fg:#1f2328; --muted:#656d76; --bg:#fff; --card:#f6f8fa; --border:#d0d7de; --accent:#0969da; --bad:#cf222e; --good:#1a7f37; }
 @media (prefers-color-scheme: dark) { :root { --fg:#e6edf3; --muted:#8d96a0; --bg:#0d1117; --card:#161b22; --border:#30363d; --accent:#4493f8; --bad:#f85149; --good:#3fb950; } }
 * { box-sizing: border-box; }
@@ -255,12 +267,15 @@ fn str_field<'a>(it: &'a Item, f: &str) -> &'a str {
 
 fn item_rows(items: &[(&Item, Decision)], limit: usize, now: i64, local: &Local) -> Markup {
     html! {
-        table {
-            tr { th { "" } th { "Title" } th { "Author" } th { "Rule" } th { "Updated" } th { "Local" } th { "" } }
+        table.items {
+            tr {
+                th data-sort="pr" { "PR" } th data-sort="title" { "Title" } th data-sort="author" { "Author" }
+                th data-sort="rule" { "Rule" } th data-sort="updated" { "Updated" } th data-sort="local" { "Local" } th { "" }
+            }
             @for (it, d) in items.iter().take(limit) {
                 tr {
                     td.nowrap { a href=(it.url) target="_blank" { (it.label) } }
-                    td {
+                    td data-v=(it.title.to_lowercase()) {
                         @match (crate::prpage::item_key(it), it.get("repo"), it.get("number")) {
                             (Some(_), Value::Str(r), Value::Int(n)) => a href=(pr::href(r, *n)) { (it.title) },
                             _ => (it.title),
@@ -272,8 +287,8 @@ fn item_rows(items: &[(&Item, Decision)], limit: usize, now: i64, local: &Local)
                     }
                     td.nowrap.muted { (str_field(it, "author")) }
                     td.nowrap.muted title=(format!("GitHub reason: {}", str_field(it, "reason"))) { (d.rule) }
-                    td.nowrap.muted { a href=(format!("/item/{}", it.id)) title="Why?" { (ago(now - updated(it))) } }
-                    td style="max-width:220px" { (local_cell(it, local)) }
+                    td.nowrap.muted data-v=(updated(it)) { a href=(format!("/item/{}", it.id)) title="Why?" { (ago(now - updated(it))) } }
+                    td style="max-width:220px" data-v=(local_sort(it, local)) { (local_cell(it, local)) }
                     td { (ignore_button(it, "/")) }
                 }
             }
@@ -350,6 +365,7 @@ async fn inbox(State(app): S) -> Markup {
                 }
             }
             script { (PreEscaped(LIVE_JS.replace("VERSION", &version.to_string()))) }
+            script { (PreEscaped(SORT_JS)) }
         },
     )
 }
@@ -423,6 +439,47 @@ const LIVE_JS: &str = r#"
     const next = t.content.firstElementChild;
     if (next && next.innerHTML !== el.innerHTML) el.innerHTML = next.innerHTML;
   });
+})();
+"#;
+
+/// Click a column title to sort every item table by it; click again to reverse. Remembered per browser.
+/// Cells sort by `data-v` when present, else their text; numbers compare numerically.
+const SORT_JS: &str = r#"
+(() => {
+  const KEY = "ghimby-sort";
+  let s = null;
+  try { s = JSON.parse(localStorage.getItem(KEY)); } catch (e) {}
+  s = s || { col: "updated", dir: -1 };
+  const val = td => td.dataset.v ?? td.textContent.trim().toLowerCase();
+  const cmp = (x, y) => {
+    const nx = Number(x), ny = Number(y);
+    if (x !== "" && y !== "" && !isNaN(nx) && !isNaN(ny)) return nx - ny;
+    return x.localeCompare(y, undefined, { numeric: true });
+  };
+  function apply() {
+    document.querySelectorAll("table.items").forEach(t => {
+      const head = [...t.rows[0].cells];
+      head.forEach(th => {
+        th.classList.toggle("asc", th.dataset.sort === s.col && s.dir > 0);
+        th.classList.toggle("desc", th.dataset.sort === s.col && s.dir < 0);
+      });
+      const i = head.findIndex(th => th.dataset.sort === s.col);
+      if (i < 0) return;
+      const rows = [...t.rows].slice(1);
+      rows.sort((a, b) => cmp(val(a.cells[i]), val(b.cells[i])) * s.dir);
+      rows.forEach(r => r.parentNode.appendChild(r));
+    });
+  }
+  document.addEventListener("click", e => {
+    const th = e.target.closest("table.items th[data-sort]");
+    if (!th) return;
+    const col = th.dataset.sort;
+    // Newest first is the useful start for dates; A–Z for everything else.
+    s = s.col === col ? { col, dir: -s.dir } : { col, dir: col === "updated" ? -1 : 1 };
+    try { localStorage.setItem(KEY, JSON.stringify(s)); } catch (e) {}
+    apply();
+  });
+  apply();
 })();
 "#;
 
