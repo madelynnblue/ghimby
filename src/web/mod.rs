@@ -258,6 +258,22 @@ fn updated(it: &Item) -> i64 {
     }
 }
 
+/// "+a −d" for PRs, sorting by total lines changed.
+fn size_cell(it: &Item) -> Markup {
+    let int = |f: &str| match it.get(f) {
+        Value::Int(n) => Some(*n),
+        _ => None,
+    };
+    match (int("additions"), int("deletions")) {
+        (Some(a), Some(d)) => html! {
+            td.nowrap.small data-v=(a + d) title=[int("changed_files").map(|n| format!("{n} files"))] {
+                span.good { "+" (a) } " " span.bad { "−" (d) }
+            }
+        },
+        _ => html! { td data-v="" {} },
+    }
+}
+
 fn str_field<'a>(it: &'a Item, f: &str) -> &'a str {
     match it.get(f) {
         Value::Str(s) => s,
@@ -270,7 +286,7 @@ fn item_rows(items: &[(&Item, Decision)], limit: usize, now: i64, local: &Local)
         table.items {
             tr {
                 th data-sort="pr" { "PR" } th data-sort="title" { "Title" } th data-sort="author" { "Author" }
-                th data-sort="rule" { "Rule" } th data-sort="updated" { "Updated" } th data-sort="local" { "Local" } th { "" }
+                th data-sort="size" title="Lines added and removed" { "Size" } th data-sort="rule" { "Rule" } th data-sort="updated" { "Updated" } th data-sort="local" { "Local" } th { "" }
             }
             @for (it, d) in items.iter().take(limit) {
                 tr {
@@ -286,6 +302,7 @@ fn item_rows(items: &[(&Item, Decision)], limit: usize, now: i64, local: &Local)
                         @if !d.errors.is_empty() { span.tag.bad title=(d.errors.join("\n")) { "rule error" } }
                     }
                     td.nowrap.muted { (str_field(it, "author")) }
+                    (size_cell(it))
                     td.nowrap.muted title=(format!("GitHub reason: {}", str_field(it, "reason"))) { (d.rule) }
                     td.nowrap.muted data-v=(updated(it)) { a href=(format!("/item/{}", it.id)) title="Why?" { (ago(now - updated(it))) } }
                     td style="max-width:220px" data-v=(local_sort(it, local)) { (local_cell(it, local)) }
