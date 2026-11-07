@@ -62,6 +62,12 @@ pub struct GitHub {
     http: reqwest::Client,
 }
 
+struct PrFlags {
+    state: String,
+    draft: bool,
+    updated: i64,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct SubjectRef {
     owner: String,
@@ -336,7 +342,7 @@ impl GitHub {
             let prs: Vec<(String, i64)> = drafts.iter().map(|d| (format!("{}/{}", d.owner, d.repo), d.number as i64)).collect();
             let flags = self.pr_flags(token, &prs).await?;
             for (d, pr) in drafts.into_iter().zip(&prs) {
-                if flags.get(&format!("{}#{}", pr.0, pr.1)).is_none_or(|(state, draft)| state != "OPEN" || !draft) {
+                if flags.get(&format!("{}#{}", pr.0, pr.1)).is_none_or(|f| f.state != "OPEN" || !f.draft) {
                     want.push(d);
                 }
             }
@@ -440,18 +446,43 @@ impl GitHub {
             return Ok(HashMap::new());
         }
         let token = self.token().await?;
-        Ok(self.pr_flags(&token, prs).await?.into_iter().map(|(k, (state, _))| (k, state)).collect())
+        Ok(self.pr_flags(&token, prs).await?.into_iter().map(|(k, f)| (k, f.state)).collect())
     }
 
-    /// State and draft flag of each PR, keyed by "owner/repo#N".
-    async fn pr_flags(&self, token: &str, prs: &[(String, i64)]) -> Result<HashMap<String, (String, bool)>> {
+    /// Re-fetches details of PRs whose GitHub updatedAt is newer than `known`, which catches
+    /// changes that send no notification, such as your own review. Returns how many changed.
+    pub async fn refetch_changed(&self, prs: &[(String, i64, i64)]) -> Result<usize> {
+        if prs.is_empty() {
+            return Ok(0);
+        }
+        let token = self.token().await?;
+        let keys: Vec<(String, i64)> = prs.iter().map(|(r, n, _)| (r.clone(), *n)).collect();
+        let flags = self.pr_flags(&token, &keys).await?;
+        let changed: Vec<SubjectRef> = prs
+            .iter()
+            .filter(|(r, n, known)| flags.get(&format!("{r}#{n}")).is_some_and(|f| f.updated > *known))
+            .filter_map(|(r, n, _)| {
+                let (owner, repo) = r.split_once('/')?;
+                Some(SubjectRef { owner: owner.into(), repo: repo.into(), number: *n as u64 })
+            })
+            .collect();
+        let n = changed.len();
+        let me = self.store.setting("github.login")?;
+        for b in changed.chunks(SUBJECT_BATCH) {
+            self.fetch_subjects(&token, &me, b.to_vec()).await?;
+        }
+        Ok(n)
+    }
+
+    /// State, draft flag and updatedAt of each PR, keyed by "owner/repo#N".
+    async fn pr_flags(&self, token: &str, prs: &[(String, i64)]) -> Result<HashMap<String, PrFlags>> {
         let mut out = HashMap::new();
         for chunk in prs.chunks(50) {
             let mut q = String::from("query {");
             for (i, (repo, n)) in chunk.iter().enumerate() {
                 let (o, r) = repo.split_once('/').unwrap_or((repo, ""));
                 q += &format!(
-                    " p{i}: repository(owner: {}, name: {}) {{ pullRequest(number: {n}) {{ state isDraft }} }}",
+                    " p{i}: repository(owner: {}, name: {}) {{ pullRequest(number: {n}) {{ state isDraft updatedAt }} }}",
                     serde_json::to_string(o)?,
                     serde_json::to_string(r)?,
                 );
@@ -461,7 +492,8 @@ impl GitHub {
             for (i, (repo, n)) in chunk.iter().enumerate() {
                 let pr = &body["data"][format!("p{i}")]["pullRequest"];
                 if let Some(s) = pr["state"].as_str() {
-                    out.insert(format!("{repo}#{n}"), (s.to_string(), pr["isDraft"] == true));
+                    let f = PrFlags { state: s.to_string(), draft: pr["isDraft"] == true, updated: jts(&pr["updatedAt"]).unwrap_or(0) };
+                    out.insert(format!("{repo}#{n}"), f);
                 }
             }
         }

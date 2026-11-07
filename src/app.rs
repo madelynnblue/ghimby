@@ -103,6 +103,9 @@ impl App {
         if let Err(e) = self.rebuild_items() {
             err.get_or_insert(format!("building items: {e:#}"));
         }
+        if let Err(e) = self.refetch_shown().await {
+            err.get_or_insert(format!("checking shown PRs: {e:#}"));
+        }
         if let Err(e) = self.refresh_pr_pages().await {
             err.get_or_insert(format!("fetching PR pages: {e:#}"));
         }
@@ -129,6 +132,27 @@ impl App {
         if before != after {
             self.changes.bump();
         }
+    }
+
+    /// Re-fetches shown PRs that changed on GitHub without notifying you (e.g. your own review),
+    /// using a light updatedAt check, then rebuilds if any did.
+    async fn refetch_shown(&self) -> Result<()> {
+        // Rule errors are reported elsewhere; without rules nothing is shown to check.
+        let Ok(compiled) = self.compile(&self.current_rules()?) else { return Ok(()) };
+        let now = now();
+        let prs: Vec<(String, i64, i64)> = self
+            .items()
+            .iter()
+            .filter(|it| prpage::item_key(it).is_some() && compiled.decide(it, now).show)
+            .filter_map(|it| match (it.get("repo"), it.get("number"), it.get("last_activity")) {
+                (Value::Str(r), Value::Int(n), Value::Time(t)) => Some((r.clone(), *n, *t)),
+                _ => None,
+            })
+            .collect();
+        if self.github.refetch_changed(&prs).await? > 0 {
+            self.rebuild_items()?;
+        }
+        Ok(())
     }
 
     /// Fetches uncached or stale pages of shown PRs, and drops pages of PRs no longer in the inbox.
