@@ -1,22 +1,46 @@
 name: release
 
-# Push a v* tag to publish a release with an Apple silicon binary.
+# Push a v* tag to publish a release. Run it by hand to build without releasing.
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
 
 permissions:
   contents: write
 
 jobs:
-  macos:
-    runs-on: macos-latest
+  build:
+    strategy:
+      matrix:
+        include:
+          - { os: macos-latest, target: aarch64-apple-darwin, asset: ghimby-darwin-arm64 }
+          # musl makes fully static binaries that run on any distro.
+          - { os: ubuntu-latest, target: x86_64-unknown-linux-musl, asset: ghimby-linux-x86_64 }
+          - { os: ubuntu-24.04-arm, target: aarch64-unknown-linux-musl, asset: ghimby-linux-aarch64 }
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: rustup target add ${{ matrix.target }}
       - run: cargo test --locked
       - run: |
-          cargo build --release --locked
-          cp target/release/ghimby ghimby-darwin-arm64
-      - run: gh release create "$GITHUB_REF_NAME" ghimby-darwin-arm64 --generate-notes
+          cargo build --release --locked --target ${{ matrix.target }}
+          cp target/${{ matrix.target }}/release/ghimby ${{ matrix.asset }}
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ matrix.asset }}
+          path: ${{ matrix.asset }}
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          merge-multiple: true
+      - run: gh release create "$GITHUB_REF_NAME" ghimby-* --repo "$GITHUB_REPOSITORY" --generate-notes
         env:
           GH_TOKEN: ${{ github.token }}
