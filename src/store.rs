@@ -148,6 +148,7 @@ pub fn now() -> i64 {
 
 impl Store {
     pub fn open(path: &Path) -> Result<Store> {
+        restrict(path)?;
         let conn = Connection::open(path)?;
         conn.pragma_update(None, "journal_mode", "WAL")?;
         let version: i64 = conn.pragma_query_value(None, "user_version", |r| r.get(0))?;
@@ -443,4 +444,19 @@ impl Store {
                 .collect()
         })
     }
+}
+
+/// The database can hold a GitHub token, so only its owner may read it. SQLite gives the -wal and
+/// -shm files the main file's mode when it creates them.
+fn restrict(path: &Path) -> Result<()> {
+    use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
+    std::fs::OpenOptions::new().create(true).append(true).mode(0o600).open(path)?;
+    for suffix in ["", "-wal", "-shm"] {
+        let mut p = path.as_os_str().to_owned();
+        p.push(suffix);
+        if std::path::Path::new(&p).exists() {
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o600))?;
+        }
+    }
+    Ok(())
 }

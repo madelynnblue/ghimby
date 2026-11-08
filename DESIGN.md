@@ -107,6 +107,17 @@ rules engine applies.
 - **PR** (`/pr/<owner>/<repo>/<N>`, linked from each PR title): read-only description, conversation,
   and the diff with review threads inline. See below.
 
+## Security
+
+There's no login, and the app can run commands and approve PRs as you, so:
+
+- It only listens on a loopback address (`--listen` refuses anything else).
+- Requests whose `Host` isn't `127.0.0.1`, `localhost` or `[::1]` on our port are refused, which
+  defeats DNS rebinding. POSTs must also have no `Origin` or our own.
+- Responses carry a CSP with `script-src 'self'` (scripts are served from `/js`, so GitHub's HTML on
+  the PR page can't run any) and `frame-ancestors 'none'` against clickjacking.
+- The database, which may hold a token, is created mode 0600.
+
 ## Live updates
 
 The server keeps a version counter, bumped when items actually change after a sync (compared, not

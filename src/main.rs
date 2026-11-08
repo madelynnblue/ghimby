@@ -13,7 +13,7 @@ mod web;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use clap::Parser;
 
 #[derive(Parser)]
@@ -22,7 +22,7 @@ struct Args {
     /// SQLite file holding config and caches; created if missing.
     #[arg(long, default_value = "ghimby.db")]
     db: PathBuf,
-    /// Address to serve the web UI on.
+    /// Address to serve the web UI on; must be loopback, since there is no login.
     #[arg(long, default_value = "127.0.0.1:7878")]
     listen: String,
 }
@@ -33,6 +33,9 @@ async fn main() -> Result<()> {
     // No color codes when launchd sends output to a log file.
     tracing_subscriber::fmt().with_ansi(std::io::stderr().is_terminal()).init();
     let args = Args::parse();
+    let addr: std::net::SocketAddr = args.listen.parse().context("--listen must be ip:port")?;
+    // There's no login, and the app can run commands and approve PRs as you.
+    anyhow::ensure!(addr.ip().is_loopback(), "--listen must be a loopback address such as 127.0.0.1");
     let store = store::Store::open(&args.db)?;
     let github = Arc::new(source::github::GitHub::new(store.clone()));
     let changes = changes::Changes::default();
@@ -48,8 +51,8 @@ async fn main() -> Result<()> {
     });
     app.rebuild_items()?;
     tokio::spawn(app.clone().sync_loop());
-    let listener = tokio::net::TcpListener::bind(&args.listen).await?;
+    let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("listening on http://{}", args.listen);
-    axum::serve(listener, web::router(app)).await?;
+    axum::serve(listener, web::router(app, addr.port())).await?;
     Ok(())
 }

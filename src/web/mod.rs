@@ -24,7 +24,8 @@ mod pr;
 
 type S = State<Arc<App>>;
 
-pub fn router(app: Arc<App>) -> Router {
+/// `port` is the one we listen on; requests naming any other host are refused.
+pub fn router(app: Arc<App>, port: u16) -> Router {
     Router::new()
         .route("/", get(inbox))
         .route("/favicon.svg", get(favicon))
@@ -43,7 +44,8 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/pr/{owner}/{repo}/{number}", get(pr::show))
         .route("/pr/{owner}/{repo}/{number}/refresh", post(pr::refresh))
         .route("/pr/{owner}/{repo}/{number}/approve", post(pr::approve))
-        .layer(middleware::from_fn(same_origin))
+        .route("/js/{name}", get(js))
+        .layer(middleware::from_fn_with_state(port, guard))
         .with_state(app)
 }
 
@@ -57,17 +59,72 @@ async fn favicon() -> impl IntoResponse {
     )
 }
 
-/// POSTs run commands on this machine, so reject ones sent by other sites.
-async fn same_origin(req: Request, next: Next) -> Response {
-    if req.method() == axum::http::Method::POST {
+async fn js(Path(name): Path<String>) -> Response {
+    let body = match name.as_str() {
+        "confirm.js" => CONFIRM_JS,
+        "live.js" => LIVE_JS,
+        "sort.js" => SORT_JS,
+        "drag.js" => DRAG_JS,
+        _ => return axum::http::StatusCode::NOT_FOUND.into_response(),
+    };
+    ([(axum::http::header::CONTENT_TYPE, "text/javascript")], body).into_response()
+}
+
+/// Scripts load from /js so the CSP can forbid inline ones; GitHub's HTML gets no script at all.
+const CSP: &str = "default-src 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; \
+    img-src * data:; media-src *; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'";
+
+/// Whether a request may proceed. The Host check defeats DNS rebinding; the Origin check stops other
+/// sites' POSTs, which run commands on this machine.
+fn allowed(post: bool, host: &str, origin: &str, port: u16) -> bool {
+    let ok_host = [format!("127.0.0.1:{port}"), format!("localhost:{port}"), format!("[::1]:{port}")]
+        .iter()
+        .any(|h| h == host);
+    ok_host && (!post || origin.is_empty() || origin == format!("http://{host}"))
+}
+
+async fn guard(State(port): State<u16>, req: Request, next: Next) -> Response {
+    let ok = {
         let header = |n: &str| req.headers().get(n).and_then(|v| v.to_str().ok()).unwrap_or("");
-        let origin = header("origin");
-        let host = header("host");
-        if !origin.is_empty() && origin != format!("http://{host}") {
-            return (axum::http::StatusCode::FORBIDDEN, "cross-origin request rejected").into_response();
-        }
+        allowed(req.method() == axum::http::Method::POST, header("host"), header("origin"), port)
+    };
+    if !ok {
+        return (axum::http::StatusCode::FORBIDDEN, "request from another site rejected").into_response();
     }
-    next.run(req).await
+    let mut resp = next.run(req).await;
+    let h = resp.headers_mut();
+    use axum::http::HeaderValue;
+    h.insert("content-security-policy", HeaderValue::from_static(CSP));
+    h.insert("x-frame-options", HeaderValue::from_static("DENY"));
+    h.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
+    resp
+}
+
+/// Asks before submitting forms marked data-confirm (inline onsubmit is blocked by the CSP).
+const CONFIRM_JS: &str = r#"
+document.addEventListener("submit", e => {
+  const m = e.target.dataset.confirm;
+  if (m && !confirm(m)) e.preventDefault();
+});
+"#;
+
+#[cfg(test)]
+mod tests {
+    use super::allowed;
+
+    #[test]
+    fn host_and_origin() {
+        assert!(allowed(false, "127.0.0.1:7880", "", 7880));
+        assert!(allowed(false, "localhost:7880", "", 7880));
+        assert!(allowed(true, "[::1]:7880", "http://[::1]:7880", 7880));
+        // DNS rebinding: the attacker's name resolves here, so Origin and Host agree but Host is foreign.
+        assert!(!allowed(true, "evil.com:7880", "http://evil.com:7880", 7880));
+        assert!(!allowed(false, "evil.com:7880", "", 7880));
+        assert!(!allowed(false, "127.0.0.1:7878", "", 7880));
+        assert!(!allowed(true, "127.0.0.1:7880", "http://evil.com", 7880));
+        assert!(!allowed(true, "127.0.0.1:7880", "null", 7880));
+    }
 }
 
 /// Checkout records and in-progress jobs, keyed by "owner/repo#N".
@@ -204,6 +261,7 @@ fn page(title: &str, body: Markup) -> Markup {
                 title { (title) " · ghimby" }
                 link rel="icon" type="image/svg+xml" href="/favicon.svg";
                 style { (PreEscaped(CSS)) }
+                script src="/js/confirm.js" {}
             }
             body {
                 nav {
@@ -381,8 +439,8 @@ async fn inbox(State(app): S) -> Markup {
                     (item_rows(v, 300, now, &local))
                 }
             }
-            script { (PreEscaped(LIVE_JS.replace("VERSION", &version.to_string()))) }
-            script { (PreEscaped(SORT_JS)) }
+            script src="/js/live.js" data-version=(version) {}
+            script src="/js/sort.js" {}
         },
     )
 }
@@ -425,7 +483,7 @@ const LIVE_JS: &str = r#"
       window.scrollTo(0, s.y);
     }
   } catch (e) {}
-  const version = "VERSION";
+  const version = document.currentScript.dataset.version;
   let stale = false, overLink = false;
   const interactive = "a, button, summary, input, select, textarea, label";
   document.addEventListener("mouseover", e => { overLink = !!e.target.closest(interactive); maybe(false); });
@@ -625,7 +683,7 @@ fn rules_editor(app: &App, text: &str, pv: Option<Preview>, saved: bool) -> Mark
                 }
                 p { button name="op" value="preview" { "Preview" } " " button name="op" value="save" { "Save" } }
             }
-            script { (PreEscaped(DRAG_JS)) }
+            script src="/js/drag.js" {}
         }
         h2 { "Reference" }
         details {
@@ -804,7 +862,7 @@ async fn settings_page(State(app): S) -> Markup {
             p.muted { "Signed in as " code { (app.store.setting("github.login").unwrap_or_default()) } }
             h2 { "Reset sync" }
             p.muted { "Forget synced notifications and re-fetch everything updated in the last " code { "sync_days" } " days. Cached PR details and CODEOWNERS are kept." }
-            form method="post" action="/settings/reset-sync" onsubmit="return confirm('Clear synced notifications and re-sync?')" {
+            form method="post" action="/settings/reset-sync" data-confirm="Clear synced notifications and re-sync?" {
                 button { "Reset sync" }
             }
             h2 { "PR checkouts" }
@@ -818,13 +876,13 @@ async fn settings_page(State(app): S) -> Markup {
                         td { code.small { (c.path) } }
                         td class=[(c.status.starts_with("error") || c.status.contains("kept")).then_some("bad")] { (c.status) }
                         td.nowrap {
-                            form method="post" action="/checkouts/remove" style="display:inline" onsubmit="return confirm('Remove this worktree?')" {
+                            form method="post" action="/checkouts/remove" style="display:inline" data-confirm="Remove this worktree?" {
                                 input type="hidden" name="repo" value=(c.repo);
                                 input type="hidden" name="number" value=(c.number);
                                 button { "Remove" }
                             }
                             " "
-                            form method="post" action="/checkouts/remove" style="display:inline" onsubmit="return confirm('Remove this worktree and its branch even if it has local changes?')" {
+                            form method="post" action="/checkouts/remove" style="display:inline" data-confirm="Remove this worktree and its branch even if it has local changes?" {
                                 input type="hidden" name="repo" value=(c.repo);
                                 input type="hidden" name="number" value=(c.number);
                                 input type="hidden" name="force" value="1";

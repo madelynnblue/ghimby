@@ -19,6 +19,7 @@ fi
 command -v gh >/dev/null || echo "warning: gh not found; ghimby gets its GitHub token from 'gh auth token'" >&2
 
 mkdir -p "$(dirname "$BIN")" "$DATA" "$(dirname "$PLIST")"
+chmod 700 "$DATA"
 if [ $# -gt 0 ]; then
     cp "$1" "$BIN.new"
 else

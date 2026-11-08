@@ -76,7 +76,7 @@ fn approve_button(app: &crate::app::App, p: &PrPage, item: Option<&crate::item::
     let label = format!("{}#{}", p.repo, p.number);
     html! {
         form method="post" action=(format!("{}/approve", href(&p.repo, p.number))) style="display:inline"
-            onsubmit=(format!("return confirm('Approve {label} on GitHub?')")) {
+            data-confirm=(format!("Approve {label} on GitHub?")) {
             input type="hidden" name="commit" value=(p.head_oid);
             button title="Submit an approving review on GitHub for the commit shown here" { "Approve" }
         }
