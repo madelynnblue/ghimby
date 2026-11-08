@@ -20,13 +20,13 @@ as a launchd agent that starts at login and restarts if it exits. Its database i
 `~/Library/Application Support/ghimby/ghimby.db` and it logs to `~/Library/Logs/ghimby.log`. Run the
 same command again to update. Start on the Rules page: the example rules name a placeholder team.
 
-To remove it (keeping the database, so reinstalling picks up where you left off):
+### Uninstalling
 
 ```
 curl -fsSL https://raw.githubusercontent.com/madelynnblue/ghimby/main/scripts/uninstall.sh | sh
 ```
 
-Add `-s -- --purge` after `sh` to delete the database and log too.
+This removes the agent, the binary, the database and the log.
 
 ## Developing
 
