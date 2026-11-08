@@ -16,7 +16,7 @@ ghimby solves this with a configurable, fast way to see which PRs you need to re
 
 ## Installation
 
-Install [gh](https://cli.github.com) and run (`gh auth login`).
+Install [gh](https://cli.github.com) and login: `gh auth login`.
 Install ghimby:
 
 ```
