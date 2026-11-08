@@ -1,0 +1,28 @@
+name: release
+
+# Push a v* tag to publish a release with a universal macOS binary.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  macos:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
+      - run: cargo test --locked
+      - run: |
+          cargo build --release --locked --target aarch64-apple-darwin
+          cargo build --release --locked --target x86_64-apple-darwin
+          lipo -create -output ghimby-darwin \
+            target/aarch64-apple-darwin/release/ghimby \
+            target/x86_64-apple-darwin/release/ghimby
+          # Apple silicon refuses to run unsigned code; an ad-hoc signature is enough.
+          codesign --force --sign - ghimby-darwin
+      - run: gh release create "$GITHUB_REF_NAME" ghimby-darwin --generate-notes
+        env:
+          GH_TOKEN: ${{ github.token }}

@@ -6,26 +6,31 @@ requests that reach you through broad CODEOWNERS team rules.
 It syncs your notifications, adds PR details and CODEOWNERS ownership, and runs rules you edit in the
 app to decide what's shown. Hidden items stay one click away, grouped by the rule that hid them.
 
-## Running
+## Installing (macOS)
+
+You need [gh](https://cli.github.com) signed in (`gh auth login`); ghimby gets its GitHub token from
+`gh auth token`. Then:
+
+```
+curl -fsSL https://raw.githubusercontent.com/madelynnblue/ghimby/main/scripts/install.sh | sh
+```
+
+and open http://127.0.0.1:7880. This downloads the latest release to `~/.local/bin/ghimby` and runs it
+as a launchd agent that starts at login and restarts if it exits. Its database is
+`~/Library/Application Support/ghimby/ghimby.db` and it logs to `~/Library/Logs/ghimby.log`. Run the
+same command again to update. Start on the Rules page: the example rules name a placeholder team.
+
+To remove it, run `scripts/uninstall.sh` (the database is kept).
+
+## Developing
 
 ```
 cargo run -- --db ghimby.db
 ```
 
 Then open http://127.0.0.1:7878. All config (rules, settings, caches) lives in the SQLite file given by
-`--db`. By default it gets a GitHub token from `gh auth token`.
-
-To run it as a background service on macOS instead:
-
-```
-scripts/deploy.sh
-```
-
-This builds a release binary to `~/.local/bin/ghimby` and runs it as a launchd agent at
-http://127.0.0.1:7880. The agent starts at login and restarts if it exits. Its database is
-`~/Library/Application Support/ghimby/ghimby.db`, copied from `./ghimby.db` on first install, and it
-logs to `~/Library/Logs/ghimby.log`. Rerun the script to deploy a new version, and run
-`scripts/uninstall.sh` to remove the agent.
+`--db`. `scripts/deploy.sh` builds this checkout and installs it as the launchd agent above, copying
+`./ghimby.db` on first install. Pushing a `v*` tag publishes a release that the installer picks up.
 
 ## Rules
 
