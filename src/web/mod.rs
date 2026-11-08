@@ -215,6 +215,7 @@ body { font: 14px/1.5 -apple-system, system-ui, sans-serif; color: var(--fg); ba
 a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
 nav { display: flex; gap: 16px; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 16px; }
 nav b { margin-right: 8px; }
+nav .gh { margin-left: auto; color: var(--muted); }
 table { border-collapse: collapse; width: 100%; }
 td, th { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
 th { color: var(--muted); font-weight: 500; }
@@ -269,6 +270,7 @@ fn page(title: &str, body: Markup) -> Markup {
                     a href="/" { "Inbox" }
                     a href="/rules" { "Rules" }
                     a href="/settings" { "Settings" }
+                    a.gh href="https://github.com/madelynnblue/ghimby" target="_blank" rel="noopener" { "GitHub" }
                 }
                 (body)
             }
