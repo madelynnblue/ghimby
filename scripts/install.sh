@@ -62,6 +62,7 @@ cat > "$PLIST.new" <<EOF
 EOF
 
 DOMAIN=gui/$(id -u)
+FIRST=$([ -e "$PLIST" ] || echo 1)
 if cmp -s "$PLIST.new" "$PLIST" && launchctl print "$DOMAIN/$LABEL" >/dev/null 2>&1; then
     rm "$PLIST.new"
     launchctl kickstart -k "$DOMAIN/$LABEL"
@@ -70,4 +71,13 @@ else
     launchctl bootout "$DOMAIN/$LABEL" 2>/dev/null || true
     launchctl bootstrap "$DOMAIN" "$PLIST"
 fi
-echo "ghimby running at http://127.0.0.1:$PORT (log: $LOG)"
+URL=http://127.0.0.1:$PORT
+echo "ghimby running at $URL (log: $LOG)"
+# Open the browser on first install only, once the server answers (up to 10s).
+if [ -n "$FIRST" ]; then
+    for _ in $(seq 50); do
+        curl -sf -o /dev/null "$URL/favicon.svg" && break
+        sleep 0.2
+    done
+    open "$URL"
+fi
