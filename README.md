@@ -1,70 +1,38 @@
 # ghimby
 
-A local web app for finding the GitHub notifications you actually need to look at, mostly review
-requests that reach you through broad CODEOWNERS team rules.
+A web app for triaging GitHub reviews.
 
-It syncs your notifications, adds PR details and CODEOWNERS ownership, and runs rules you edit in the
-app to decide what's shown. Hidden items stay one click away, grouped by the rule that hid them.
+Does your CODEOWNERS make it difficult to identify which PRs you need to review?
+Have you failed to find the correct gmail filters to see when a PR has new comments or a push?
+ghimby solves this with a configurable, fast way to see which PRs you need to review or re-review.
 
-## Installing (Apple silicon Macs)
+## Features
 
-You need [gh](https://cli.github.com) signed in (`gh auth login`); ghimby gets its GitHub token from
-`gh auth token`. Then:
+- So fast: most clicks are instant.
+- Configurable rules with a DSL.
+- See the full PR diff without opening an editor or the GitHub PR page.
+- Open the PR in a dedicated workspace in your local editor.
+- If that editor is VS Code and you have the GitHub Pull Requests extension installed, it works as expected.
+
+## Installation
+
+Install [gh](https://cli.github.com) and run (`gh auth login`).
+Install ghimby:
 
 ```
 curl -fsSL https://raw.githubusercontent.com/madelynnblue/ghimby/main/scripts/install.sh | sh
 ```
 
-and open http://127.0.0.1:7880. This downloads the latest release to `~/.local/bin/ghimby` and runs it
-as a launchd agent that starts at login and restarts if it exits. Its database is
-`~/Library/Application Support/ghimby/ghimby.db` and it logs to `~/Library/Logs/ghimby.log`. Run the
-same command again to update. Start on the Rules page: the example rules name a placeholder team.
+This will open http://127.0.0.1:7880.
+Run it again to update.
 
-### Uninstalling
+Supports:
+
+- macOS
+- linux (amd64, arm64)
+
+### Uninstallation
 
 ```
 curl -fsSL https://raw.githubusercontent.com/madelynnblue/ghimby/main/scripts/uninstall.sh | sh
 ```
-
-This removes the agent, the binary, the database and the log.
-
-## Developing
-
-```
-cargo run -- --db ghimby.db
-```
-
-Then open http://127.0.0.1:7878. All config (rules, settings, caches) lives in the SQLite file given by
-`--db`. `scripts/deploy.sh` builds this checkout and installs it as the launchd agent above, copying
-`./ghimby.db` on first install. Pushing a `v*` tag publishes a release that the installer picks up.
-
-## Rules
-
-Rules run top to bottom. `show` and `hide` stop at the first match; `tag` adds a label and keeps going.
-
-```
-hide "finished" if state != "open"
-hide "ignored" if ignored
-hide "bots" if author in ["dependabot", "renovate"]
-hide "already reviewed" if reviewed_by_me and not new_since_my_review
-hide "draft" if draft
-show "direct" if reason in ["mention", "author", "assign"] or requested_for_me
-show "storage" if owned_by("@acme/storage", max_owners: 2)
-default hide
-```
-
-The Rules page has a text editor, a drag-to-reorder form, a preview of what would change, and a
-reference of every field and function.
-
-## Features
-
-- **Review badges**: approved or changes-requested PRs are marked next to the title.
-- **Ignore**: hide a specific PR from the inbox.
-- **PR page**: click a title for the description, conversation, and diff with review threads inline,
-  cached locally and re-fetched when the PR changes. An Approve button submits an approving review for
-  the commit shown.
-- **Open**: check a PR out in its own git worktree (`<clone>/.ghimby/worktrees/pr-<N>`) and open it in
-  your editor, linked for VS Code's GitHub Pull Requests extension. Worktrees of merged PRs are cleaned
-  up automatically if they have no local changes.
-
-See [DESIGN.md](DESIGN.md) for details.
