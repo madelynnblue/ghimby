@@ -12,8 +12,8 @@ DATA="$HOME/Library/Application Support/ghimby"
 LOG=$HOME/Library/Logs/ghimby.log
 PLIST=$HOME/Library/LaunchAgents/$LABEL.plist
 
-if [ "$(uname -s)" != Darwin ]; then
-    echo "ghimby's installer supports macOS only" >&2
+if [ "$(uname -s)" != Darwin ] || [ "$(uname -m)" != arm64 ]; then
+    echo "ghimby's installer supports Apple silicon Macs only" >&2
     exit 1
 fi
 command -v gh >/dev/null || echo "warning: gh not found; ghimby gets its GitHub token from 'gh auth token'" >&2
@@ -23,9 +23,9 @@ if [ $# -gt 0 ]; then
     cp "$1" "$BIN.new"
 else
     if [ -n "${GHIMBY_VERSION:-}" ]; then
-        URL=https://github.com/$REPO/releases/download/$GHIMBY_VERSION/ghimby-darwin
+        URL=https://github.com/$REPO/releases/download/$GHIMBY_VERSION/ghimby-darwin-arm64
     else
-        URL=https://github.com/$REPO/releases/latest/download/ghimby-darwin
+        URL=https://github.com/$REPO/releases/latest/download/ghimby-darwin-arm64
     fi
     echo "downloading $URL"
     curl -fsSL "$URL" -o "$BIN.new"

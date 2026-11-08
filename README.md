@@ -6,7 +6,7 @@ requests that reach you through broad CODEOWNERS team rules.
 It syncs your notifications, adds PR details and CODEOWNERS ownership, and runs rules you edit in the
 app to decide what's shown. Hidden items stay one click away, grouped by the rule that hid them.
 
-## Installing (macOS)
+## Installing (Apple silicon Macs)
 
 You need [gh](https://cli.github.com) signed in (`gh auth login`); ghimby gets its GitHub token from
 `gh auth token`. Then:
