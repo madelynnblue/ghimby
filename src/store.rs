@@ -12,6 +12,7 @@ hide "ignored" if ignored
 hide "bots" if author in ["dependabot", "renovate"]
 hide "already reviewed" if reviewed_by_me and not new_since_my_review
 hide "draft" if draft
+tag "my turn" if new_since_my_activity
 default show
 "#;
 

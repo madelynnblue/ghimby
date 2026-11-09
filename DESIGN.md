@@ -26,6 +26,7 @@ hide "ignored"          if ignored
 hide "bots"             if author in ["dependabot", "acme-ci"]
 hide "already reviewed" if reviewed_by_me and not new_since_my_review
 hide "draft"           if draft
+show "my turn"          if new_since_my_activity or (mine and review_decision == "approved")
 show "storage"          if owned_by("@acme/storage", max_owners: 2)
 default hide
 ```
@@ -37,7 +38,7 @@ Hidden items stay viewable in the app with the rule that hid them.
 | field | type |
 |---|---|
 | `repo`, `author`, `title`, `reason`, `state`, `review_decision` | string |
-| `draft`, `ignored`, `requested_for_me`, `reviewed_by_me`, `new_since_my_review` | bool |
+| `draft`, `ignored`, `mine`, `requested_for_me`, `reviewed_by_me`, `new_since_my_review`, `new_since_my_activity` | bool |
 | `labels`, `paths`, `requested_teams`, `requested_users`, `approved_by`, `changes_requested_by` | list of strings |
 | `changed_files`, `additions`, `deletions` | int |
 | `updated`, `created`, `last_activity` | timestamp (use `age(updated) > 14d`) |
@@ -45,6 +46,10 @@ Hidden items stay viewable in the app with the rule that hid them.
 
 `new_since_my_review` is true when, after your latest review, there was a new commit or force-push,
 a comment or review by another human, or a review re-request for you or one of your teams.
+
+`mine` is true on PRs and issues you opened. `new_since_my_activity` is its counterpart to
+`new_since_my_review`: on your own PR, another human's latest commit, push, comment or review is newer
+than yours, so it's your turn.
 
 `ignored` is set by the Ignore button on an inbox row (keyed by the item's URL, so it survives
 re-syncs). Ignoring only sets the field; the `hide "ignored"` rule is what hides it.

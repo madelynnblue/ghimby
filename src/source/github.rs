@@ -35,6 +35,7 @@ pub const FIELDS: &[FieldDoc] = &[
     FieldDoc { name: "state", help: "open, closed, or merged" },
     FieldDoc { name: "draft", help: "bool" },
     FieldDoc { name: "author", help: "Login of the PR or issue author" },
+    FieldDoc { name: "mine", help: "You opened this PR or issue" },
     FieldDoc { name: "labels", help: "List of label names" },
     FieldDoc { name: "paths", help: "Changed file paths (first 100)" },
     FieldDoc { name: "changed_files", help: "int" },
@@ -53,6 +54,10 @@ pub const FIELDS: &[FieldDoc] = &[
     FieldDoc {
         name: "new_since_my_review",
         help: "Since your latest review: a new commit or force-push, a comment or review by another human, or a review re-request for you or your teams",
+    },
+    FieldDoc {
+        name: "new_since_my_activity",
+        help: "On a PR you opened: another human commented, reviewed or pushed after your latest commit, push, comment or review",
     },
     FieldDoc { name: "codeowners", help: "Per changed file, the owners of its last-matching CODEOWNERS line. Use owned_by()." },
 ];
@@ -578,6 +583,27 @@ fn review_activity(pr: &J, me: &str, my_teams: &[String]) -> (bool, bool) {
     (true, new)
 }
 
+/// Whether another human's latest commit, push, comment or review is newer than yours.
+fn others_after_me(pr: &J, me: &str) -> bool {
+    let (mut mine, mut theirs) = (0, 0);
+    for ev in pr["timelineItems"]["nodes"].as_array().into_iter().flatten() {
+        let (who, at) = match ev["__typename"].as_str().unwrap_or("") {
+            "PullRequestCommit" => (&ev["commit"]["author"]["user"], &ev["commit"]["committedDate"]),
+            "HeadRefForcePushedEvent" => (&ev["actor"], &ev["createdAt"]),
+            "IssueComment" => (&ev["author"], &ev["createdAt"]),
+            "PullRequestReview" => (&ev["author"], &ev["submittedAt"]),
+            _ => continue,
+        };
+        let (Some(t), Some(l)) = (jts(at), login(who)) else { continue };
+        if l == me {
+            mine = mine.max(t);
+        } else if !is_bot(who) {
+            theirs = theirs.max(t);
+        }
+    }
+    theirs > mine
+}
+
 fn strs_at(v: &J, list: &str, field: &str) -> Vec<String> {
     v[list]["nodes"]
         .as_array()
@@ -680,6 +706,7 @@ impl Source for GitHub {
                     it.set("state", Value::Str(state.to_lowercase()));
                 }
                 if let Some(a) = login(&s["author"]) {
+                    it.set("mine", Value::Bool(a == me));
                     it.set("author", Value::Str(a));
                 }
                 if let Some(t) = jts(&s["createdAt"]) {
@@ -725,6 +752,8 @@ impl Source for GitHub {
                     let (reviewed, new) = review_activity(s, &me, &teams);
                     it.set("reviewed_by_me", Value::Bool(reviewed));
                     it.set("new_since_my_review", Value::Bool(new));
+                    let mine = login(&s["author"]).is_some_and(|a| a == *me);
+                    it.set("new_since_my_activity", Value::Bool(mine && others_after_me(s, &me)));
                 }
             }
             items.push(it);
@@ -808,6 +837,24 @@ mod tests {
         ] {
             assert_eq!(act(json!([ev])), (true, true), "{ev}");
         }
+    }
+
+    #[test]
+    fn author_turn() {
+        let c = |who: &str, at: &str| json!({ "__typename": "IssueComment", "createdAt": at, "author": { "login": who } });
+        let after = |evs: Vec<J>| others_after_me(&json!({ "timelineItems": { "nodes": evs } }), "me");
+        assert!(!after(vec![]));
+        assert!(after(vec![c("bob", "2026-11-02T00:00:00Z")]));
+        assert!(!after(vec![c("bob", "2026-11-02T00:00:00Z"), c("me", "2026-11-03T00:00:00Z")]));
+        assert!(after(vec![
+            json!({ "__typename": "PullRequestCommit", "commit": { "committedDate": "2026-11-01T00:00:00Z", "author": { "user": { "login": "Me" } } } }),
+            json!({ "__typename": "PullRequestReview", "submittedAt": "2026-11-02T00:00:00Z", "author": { "login": "bob" } }),
+        ]));
+        assert!(!after(vec![
+            json!({ "__typename": "PullRequestReview", "submittedAt": "2026-11-02T00:00:00Z", "author": { "login": "bob" } }),
+            json!({ "__typename": "HeadRefForcePushedEvent", "createdAt": "2026-11-03T00:00:00Z", "actor": { "login": "me" } }),
+            json!({ "__typename": "IssueComment", "createdAt": "2026-11-04T00:00:00Z", "author": { "__typename": "Bot", "login": "ci" } }),
+        ]));
     }
 
     #[test]
