@@ -24,7 +24,7 @@ curl -fsSL https://raw.githubusercontent.com/madelynnblue/ghimby/main/scripts/in
 ```
 
 This will open http://127.0.0.1:7880.
-It updates itself daily to the newest release (turn this off with the `auto_update` setting), or run the install command again to update now.
+It'll automatically update itself.
 
 Supports:
 
