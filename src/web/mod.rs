@@ -10,6 +10,7 @@ use axum::response::sse::{Event, KeepAlive, Sse};
 use axum::response::{IntoResponse, Redirect, Response};
 use axum::routing::{get, post};
 use axum::{Form, Router};
+use futures::StreamExt;
 use maud::{DOCTYPE, Markup, PreEscaped, html};
 use serde::Deserialize;
 
@@ -447,7 +448,9 @@ async fn inbox(State(app): S) -> Markup {
 }
 
 /// Pushes "version" when the inbox changes and "status" when the sync status line changes.
+/// An open stream means a visible inbox tab, which keeps background syncing going.
 async fn events(State(app): S) -> impl IntoResponse {
+    let viewer = app.viewer();
     let rx = app.changes.subscribe();
     let tick = tokio::time::interval(std::time::Duration::from_secs(1));
     let stream = futures::stream::unfold((app, rx, tick, None::<u64>, String::new()), |(app, mut rx, mut tick, sent, status)| async move {
@@ -468,18 +471,25 @@ async fn events(State(app): S) -> impl IntoResponse {
             }
         }
     });
+    let stream = stream.map(move |ev| {
+        let _ = &viewer;
+        ev
+    });
     Sse::new(stream).keep_alive(KeepAlive::default())
 }
 
-/// Reloads the inbox when it changes, but only while the window is in the background or right as it
-/// regains focus, never while the pointer is on a link or button. Keeps scroll and open groups.
+/// Reloads the inbox when it changes, but only while the window is in the background, right as it
+/// regains focus, or soon after the tab shows, never while the pointer is on a link or button. Keeps
+/// scroll and open groups. Listens only while visible, since that's what keeps the server syncing.
 const LIVE_JS: &str = r#"
 (() => {
   const KEY = "ghimby-inbox";
+  let restored = false;
   try {
     const s = JSON.parse(sessionStorage.getItem(KEY) || "null");
     sessionStorage.removeItem(KEY);
     if (s) {
+      restored = true;
       document.querySelectorAll("details[data-k]").forEach(d => { if (s.open.includes(d.dataset.k)) d.open = true; });
       window.scrollTo(0, s.y);
     }
@@ -496,25 +506,42 @@ const LIVE_JS: &str = r#"
     } catch (e) {}
     location.reload();
   }
+  // Showing the tab may start a sync; let its result reload the page for a short while after.
+  const GRACE = 30000;
+  let shown = restored ? 0 : Date.now();
   // focusing: the window just came forward, the one moment a focused page may reload.
   function maybe(focusing) {
     if (!stale) return;
     if (document.hidden) return reload();
     if (overLink) return;
-    if (focusing || !document.hasFocus()) reload();
+    if (focusing || !document.hasFocus() || Date.now() - shown < GRACE) reload();
+  }
+  let es = null;
+  function listen() {
+    if (document.hidden) {
+      if (es) es.close();
+      es = null;
+      return;
+    }
+    if (es) return;
+    es = new EventSource("/events");
+    es.addEventListener("version", e => { if (e.data !== version) { stale = true; maybe(false); } });
+    es.addEventListener("status", e => {
+      const el = document.getElementById("status");
+      if (!el || el.matches(":hover")) return;
+      const t = document.createElement("template");
+      t.innerHTML = e.data;
+      const next = t.content.firstElementChild;
+      if (next && next.innerHTML !== el.innerHTML) el.innerHTML = next.innerHTML;
+    });
   }
   window.addEventListener("focus", () => maybe(true));
-  document.addEventListener("visibilitychange", () => maybe(!document.hidden));
-  const es = new EventSource("/events");
-  es.addEventListener("version", e => { if (e.data !== version) { stale = true; maybe(false); } });
-  es.addEventListener("status", e => {
-    const el = document.getElementById("status");
-    if (!el || el.matches(":hover")) return;
-    const t = document.createElement("template");
-    t.innerHTML = e.data;
-    const next = t.content.firstElementChild;
-    if (next && next.innerHTML !== el.innerHTML) el.innerHTML = next.innerHTML;
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) shown = Date.now();
+    listen();
+    maybe(!document.hidden);
   });
+  listen();
 })();
 "#;
 

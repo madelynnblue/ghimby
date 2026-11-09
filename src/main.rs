@@ -49,6 +49,8 @@ async fn main() -> Result<()> {
         items: Default::default(),
         status: Default::default(),
         kick: Default::default(),
+        viewers: tokio::sync::watch::channel(0).0,
+        synced_at: Default::default(),
     });
     app.rebuild_items()?;
     tokio::spawn(app.clone().sync_loop());

@@ -118,6 +118,17 @@ There's no login, and the app can run commands and approve PRs as you, so:
   the PR page can't run any) and `frame-ancestors 'none'` against clickjacking.
 - The database, which may hold a token, is created mode 0600.
 
+## When it syncs
+
+Syncing only matters while you're looking, so the inbox page drives it:
+
+- An inbox tab holds the `/events` stream only while it's visible, and closes it when hidden.
+- When a stream opens and the last sync is older than `stale_secs` (default 2 min), a sync starts
+  right away.
+- While any stream is open, it syncs every `poll_secs` (default 5 min).
+- With none open, it syncs once a day, so auto-update and checkout cleanup still run.
+- The Sync button, Ignore and saving rules sync immediately, as before.
+
 ## Live updates
 
 The server keeps a version counter, bumped when items actually change after a sync (compared, not
@@ -127,7 +138,8 @@ version on change and the sync status line when it changes.
 
 The inbox embeds its version. On a newer one it reloads only when that can't move things under the
 pointer: right away if the tab is hidden or the window is unfocused, otherwise the moment the window
-regains focus. Never while the pointer is on a link, button or summary; it waits until the pointer
+regains focus, or within 30 seconds of the tab showing (so the sync that showing started lands, but a
+reload this rule caused doesn't open a new window). Never while the pointer is on a link, button or summary; it waits until the pointer
 moves off. Open hidden groups and the scroll position survive the reload. The status line updates in
 place without a reload.
 

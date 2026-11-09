@@ -95,7 +95,13 @@ pub const SETTINGS: &[Setting] = &[
     Setting {
         key: "poll_secs",
         default: "300",
-        help: "Seconds between notification polls.",
+        help: "Seconds between syncs while an inbox tab is visible. With none, ghimby syncs once a day.",
+        multiline: false,
+    },
+    Setting {
+        key: "stale_secs",
+        default: "120",
+        help: "When an inbox tab becomes visible, sync right away if the last sync is older than this many seconds.",
         multiline: false,
     },
     Setting {

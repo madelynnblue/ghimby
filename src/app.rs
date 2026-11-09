@@ -1,12 +1,13 @@
 //! Shared state and the background sync loop.
 
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicI64, Ordering::Relaxed};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use anyhow::{Result, bail};
 use futures::StreamExt;
-use tokio::sync::Notify;
+use tokio::sync::{Notify, watch};
 
 use crate::changes::Changes;
 use crate::checkout::{self, Checkouts};
@@ -33,6 +34,21 @@ pub struct App {
     pub github: Arc<GitHub>,
     pub checkouts: Checkouts,
     pub changes: Changes,
+    /// Inbox tabs open and visible; background syncing waits for one.
+    pub viewers: watch::Sender<usize>,
+    pub synced_at: AtomicI64,
+}
+
+/// Without a visible inbox tab, sync only this often, so auto-update and checkout cleanup still run.
+const IDLE_SECS: i64 = 86400;
+
+/// Counts as a viewer until dropped.
+pub struct Viewer(Arc<App>);
+
+impl Drop for Viewer {
+    fn drop(&mut self) {
+        self.0.viewers.send_modify(|n| *n -= 1);
+    }
 }
 
 impl App {
@@ -246,13 +262,34 @@ impl App {
         Ok(())
     }
 
+    /// Registers a visible inbox tab, syncing now if the last sync is older than `stale_secs`.
+    pub fn viewer(self: &Arc<Self>) -> Viewer {
+        let stale = self.store.setting_i64("stale_secs").unwrap_or(120);
+        if now() - self.synced_at.load(Relaxed) >= stale && !self.status.lock().unwrap().running {
+            self.kick.notify_one();
+        }
+        self.viewers.send_modify(|n| *n += 1);
+        Viewer(self.clone())
+    }
+
     pub async fn sync_loop(self: Arc<Self>) {
+        let mut viewers = self.viewers.subscribe();
         loop {
             self.sync_once().await;
-            let secs = self.store.setting_i64("poll_secs").unwrap_or(300).max(60);
-            tokio::select! {
-                _ = tokio::time::sleep(Duration::from_secs(secs as u64)) => {}
-                _ = self.kick.notified() => {}
+            self.synced_at.store(now(), Relaxed);
+            loop {
+                let every = if *viewers.borrow_and_update() > 0 {
+                    self.store.setting_i64("poll_secs").unwrap_or(300).max(60)
+                } else {
+                    IDLE_SECS
+                };
+                let wait = (self.synced_at.load(Relaxed) + every - now()).max(0) as u64;
+                tokio::select! {
+                    _ = tokio::time::sleep(Duration::from_secs(wait)) => break,
+                    _ = self.kick.notified() => break,
+                    // A tab appeared or went away: recompute the deadline.
+                    _ = viewers.changed() => {}
+                }
             }
         }
     }
