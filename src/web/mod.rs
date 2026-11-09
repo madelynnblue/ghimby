@@ -96,7 +96,8 @@ async fn guard(State(port): State<u16>, req: Request, next: Next) -> Response {
     use axum::http::HeaderValue;
     h.insert("content-security-policy", HeaderValue::from_static(CSP));
     h.insert("x-frame-options", HeaderValue::from_static("DENY"));
-    h.insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    // Not no-referrer: that makes browsers send "Origin: null" on form posts, failing the check above.
+    h.insert("referrer-policy", HeaderValue::from_static("same-origin"));
     h.insert("x-content-type-options", HeaderValue::from_static("nosniff"));
     resp
 }
