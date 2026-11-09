@@ -215,7 +215,6 @@ th.desc::after { content: " ▼"; font-size: 0.8em; }
 body { font: 14px/1.5 -apple-system, system-ui, sans-serif; color: var(--fg); background: var(--bg); margin: 0 auto; padding: 16px; max-width: 1200px; }
 a { color: var(--accent); text-decoration: none; } a:hover { text-decoration: underline; }
 nav { display: flex; gap: 16px; align-items: center; border-bottom: 1px solid var(--border); padding-bottom: 8px; margin-bottom: 16px; }
-nav b { margin-right: 8px; }
 nav .gh { margin-left: auto; color: var(--muted); }
 table { border-collapse: collapse; width: 100%; }
 td, th { text-align: left; padding: 4px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
@@ -267,11 +266,10 @@ fn page(title: &str, body: Markup) -> Markup {
             }
             body {
                 nav {
-                    b { "ghimby" }
                     a href="/" { "Inbox" }
                     a href="/rules" { "Rules" }
                     a href="/settings" { "Settings" }
-                    a.gh href="https://github.com/madelynnblue/ghimby" target="_blank" rel="noopener" { "GitHub" }
+                    a.gh href=(crate::update::REPO_URL) target="_blank" rel="noopener" { "ghimby " (crate::update::VERSION) }
                 }
                 (body)
             }

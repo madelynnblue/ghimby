@@ -132,6 +132,9 @@ impl App {
         if before != after {
             self.changes.bump();
         }
+        if let Err(e) = crate::update::maybe_update(self).await {
+            tracing::warn!("auto-update: {e:#}");
+        }
     }
 
     /// Re-fetches shown PRs that changed on GitHub without notifying you (e.g. your own review),

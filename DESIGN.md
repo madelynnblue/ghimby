@@ -224,3 +224,15 @@ the sweep runs `git worktree prune` and drops the record. Open PRs are never rem
 
 - Marking notifications read/done on GitHub (write access to the account).
 - Sources other than GitHub notifications.
+
+## Versions and auto-update
+
+Release builds get their tag (`v0.1.3`) baked in at compile time; local builds report `dev`. The top
+bar shows it, and `ghimby --version` prints it.
+
+After a sync, at most once a day, a release build run by launchd or systemd (`XPC_SERVICE_NAME` or
+`INVOCATION_ID` is set) asks GitHub for the latest release. If it's newer, it downloads this
+platform's binary next to itself, checks that `--version` reports the new tag, renames it over the
+running binary and exits; the service manager starts the new one. It skips the check while a checkout
+is running, and the `auto_update` setting turns it off. Open pages reload on their own, since the
+restarted server's change counter starts from the clock.

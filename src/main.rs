@@ -8,6 +8,7 @@ mod prpage;
 mod rules;
 mod source;
 mod store;
+mod update;
 mod web;
 
 use std::path::PathBuf;
@@ -17,7 +18,7 @@ use anyhow::{Context, Result};
 use clap::Parser;
 
 #[derive(Parser)]
-#[command(about = "Filter GitHub notifications with rules stored in SQLite")]
+#[command(about = "Filter GitHub notifications with rules stored in SQLite", version = update::VERSION)]
 struct Args {
     /// SQLite file holding config and caches; created if missing.
     #[arg(long, default_value = "ghimby.db")]

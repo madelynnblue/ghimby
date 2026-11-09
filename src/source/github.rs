@@ -156,7 +156,7 @@ impl GitHub {
         Ok(t)
     }
 
-    async fn get(&self, token: &str, url: &str, extra: HeaderMap) -> Result<reqwest::Response> {
+    pub(crate) async fn get(&self, token: &str, url: &str, extra: HeaderMap) -> Result<reqwest::Response> {
         let resp = self
             .http
             .get(url)

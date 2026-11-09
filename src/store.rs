@@ -140,6 +140,12 @@ pub const SETTINGS: &[Setting] = &[
         help: "Remove a PR checkout this many days after the PR merges or closes, if it has no local changes.",
         multiline: false,
     },
+    Setting {
+        key: "auto_update",
+        default: "true",
+        help: "Once a day, install the newest release and restart. Only installed release builds update; set to false to turn off.",
+        multiline: false,
+    },
 ];
 
 pub fn now() -> i64 {
