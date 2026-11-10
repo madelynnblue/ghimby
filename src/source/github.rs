@@ -543,6 +543,16 @@ fn review_decision(pr: &J) -> (&'static str, Vec<String>, Vec<String>) {
     (decision, approved, changes)
 }
 
+/// Who put a commit on the PR: the committer, so cherry-picks count as the picker's.
+/// Web UI commits are committed by web-flow, so fall back to the author for those.
+fn commit_user(ev: &J) -> &J {
+    let c = &ev["commit"]["committer"]["user"];
+    match login(c).as_deref() {
+        Some("web-flow") | None => &ev["commit"]["author"]["user"],
+        Some(_) => c,
+    }
+}
+
 /// Whether `me` reviewed, and whether anything new happened since `me`'s latest review.
 fn review_activity(pr: &J, me: &str, my_teams: &[String]) -> (bool, bool) {
     let Some(last) = pr["myReviews"]["nodes"]
@@ -564,7 +574,7 @@ fn review_activity(pr: &J, me: &str, my_teams: &[String]) -> (bool, bool) {
             match ev["__typename"].as_str().unwrap_or("") {
                 "PullRequestCommit" => {
                     after(&ev["commit"]["committedDate"])
-                        && login(&ev["commit"]["author"]["user"]).as_deref() != Some(me)
+                        && login(commit_user(ev)).as_deref() != Some(me)
                 }
                 "HeadRefForcePushedEvent" => after(&ev["createdAt"]) && others(&ev["actor"]),
                 "IssueComment" => after(&ev["createdAt"]) && others(&ev["author"]),
@@ -588,7 +598,7 @@ fn others_after_me(pr: &J, me: &str) -> bool {
     let (mut mine, mut theirs) = (0, 0);
     for ev in pr["timelineItems"]["nodes"].as_array().into_iter().flatten() {
         let (who, at) = match ev["__typename"].as_str().unwrap_or("") {
-            "PullRequestCommit" => (&ev["commit"]["author"]["user"], &ev["commit"]["committedDate"]),
+            "PullRequestCommit" => (commit_user(ev), &ev["commit"]["committedDate"]),
             "HeadRefForcePushedEvent" => (&ev["actor"], &ev["createdAt"]),
             "IssueComment" => (&ev["author"], &ev["createdAt"]),
             "PullRequestReview" => (&ev["author"], &ev["submittedAt"]),
@@ -781,7 +791,7 @@ __typename
   timelineItems(last: 100, itemTypes: [PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT, ISSUE_COMMENT, PULL_REQUEST_REVIEW, REVIEW_REQUESTED_EVENT]) {
     nodes {
       __typename
-      ... on PullRequestCommit { commit { committedDate author { user { login } } } }
+      ... on PullRequestCommit { commit { committedDate author { user { login } } committer { user { login } } } }
       ... on HeadRefForcePushedEvent { createdAt actor { __typename login } }
       ... on IssueComment { createdAt author { __typename login } }
       ... on PullRequestReview { submittedAt author { __typename login } }
@@ -855,6 +865,16 @@ mod tests {
             json!({ "__typename": "HeadRefForcePushedEvent", "createdAt": "2026-11-03T00:00:00Z", "actor": { "login": "me" } }),
             json!({ "__typename": "IssueComment", "createdAt": "2026-11-04T00:00:00Z", "author": { "__typename": "Bot", "login": "ci" } }),
         ]));
+        let commit = |author: &str, committer: &str| json!({ "__typename": "PullRequestCommit", "commit": {
+            "committedDate": "2026-11-01T00:00:00Z",
+            "author": { "user": { "login": author } },
+            "committer": { "user": { "login": committer } },
+        } });
+        // A cherry-pick of someone else's commit is still my push.
+        assert!(!after(vec![commit("bob", "me")]));
+        assert!(!after(vec![commit("me", "web-flow")]));
+        assert!(after(vec![commit("bob", "web-flow")]));
+        assert!(after(vec![commit("me", "bob")]));
     }
 
     #[test]
