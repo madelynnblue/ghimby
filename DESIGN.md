@@ -245,6 +245,29 @@ Removal runs `git worktree remove`, deletes the `worktree-pr-<N>` branch and its
 are flagged on the settings page ("PR closed, has local changes"). If the folder was deleted by hand,
 the sweep runs `git worktree prune` and drops the record. Open PRs are never removed automatically.
 
+## Claude sessions
+
+The inbox also lists Claude desktop app sessions that need you (on unless the `claude_section`
+setting is `false`), read from the app's per-session records under the `claude_sessions_dir` setting (`<dir>/<account>/<org>/local_*.json`). ghimby
+never writes there, and the format is the app's own, so unparseable records are skipped.
+
+- **Claude section**, above Shown: open sessions whose last turn ended after you last opened them,
+  with the app's post-turn status and what it says you need to do. The title links to
+  `claude://claude.ai/epitaxy/<id>`, which opens the session in the app; opening it clears the row.
+- **PR rows** get a "Claude" pill for each open session linked to the PR: one the app linked by PR
+  number, or one running inside that PR's ghimby checkout. A dot marks an unseen one.
+- "Unseen" uses the record's timestamps: a turn edge after the user's latest message is the turn's
+  end, and it's unseen when later than `lastFocusedAt`. The app keeps only each session's latest
+  focus, so the most recently focused session counts as seen. A turn you watched finish and then
+  left still counts as unseen until you open it again.
+- **Dismiss** on a row hides it until the session finishes another turn. ghimby stores the dismissed
+  turn's end in `claude_dismissed(id, finished_at)` and drops the row once the session closes. It
+  can't clear the app's own sidebar dot.
+- Records are re-read every 5 seconds while an inbox tab is visible, bumping the change counter
+  when the list differs.
+- Sessions waiting mid-turn on a permission or question aren't in the records; the app's own
+  notifications cover those.
+
 ## Not in v1
 
 - Marking notifications read/done on GitHub (write access to the account).

@@ -38,6 +38,9 @@ CREATE TABLE pr_pages (key TEXT PRIMARY KEY, json TEXT NOT NULL, updated_at INTE
 "#, r#"
 -- The subject query gained updatedAt and review decisions; re-fetch cached subjects.
 UPDATE subjects SET fetched_at = 0;
+"#, r#"
+-- Claude sessions dismissed from the inbox, until a turn ends after finished_at (unix ms).
+CREATE TABLE claude_dismissed (id TEXT PRIMARY KEY, finished_at INTEGER NOT NULL);
 "#];
 
 /// Added by column check, not as a migration, since an unmerged branch already used the next number.
@@ -75,6 +78,13 @@ pub struct Setting {
     pub default: &'static str,
     pub help: &'static str,
     pub multiline: bool,
+}
+
+impl Setting {
+    /// Settings defaulting to true or false are on/off switches.
+    pub fn is_bool(&self) -> bool {
+        matches!(self.default, "true" | "false")
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -174,9 +184,21 @@ pub const SETTINGS: &[Setting] = &[
         multiline: false,
     },
     Setting {
+        key: "claude_section",
+        default: "true",
+        help: "Show Claude desktop sessions that need you at the top of the inbox.",
+        multiline: false,
+    },
+    Setting {
+        key: "claude_sessions_dir",
+        default: "~/Library/Application Support/Claude/claude-code-sessions",
+        help: "Where the Claude desktop app keeps its session records; read-only.",
+        multiline: false,
+    },
+    Setting {
         key: "auto_update",
         default: "true",
-        help: "Once a day, install the newest release and restart. Only installed release builds update; set to false to turn off.",
+        help: "Once a day, install the newest release and restart. Only installed release builds update.",
         multiline: false,
     },
 ];
@@ -289,6 +311,25 @@ impl Store {
             ),
             None => c.execute("DELETE FROM ignored WHERE url = ?", [url]),
         })?;
+        Ok(())
+    }
+
+    /// Claude session id to the end of the turn it was dismissed at.
+    pub fn claude_dismissed(&self) -> Result<std::collections::HashMap<String, i64>> {
+        self.with(|c| c.prepare("SELECT id, finished_at FROM claude_dismissed")?.query_map([], |r| Ok((r.get(0)?, r.get(1)?)))?.collect())
+    }
+
+    pub fn dismiss_claude(&self, id: &str, finished_at: i64) -> Result<()> {
+        self.with(|c| c.execute("INSERT OR REPLACE INTO claude_dismissed (id, finished_at) VALUES (?, ?)", params![id, finished_at]))?;
+        Ok(())
+    }
+
+    /// Drops dismissals of sessions that are no longer open.
+    pub fn prune_claude_dismissed(&self, open: &[&str]) -> Result<()> {
+        let dismissed = self.claude_dismissed()?;
+        for id in dismissed.keys().filter(|id| !open.contains(&id.as_str())) {
+            self.with(|c| c.execute("DELETE FROM claude_dismissed WHERE id = ?", [id]))?;
+        }
         Ok(())
     }
 

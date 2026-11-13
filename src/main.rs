@@ -1,5 +1,6 @@
 mod app;
 mod changes;
+mod claude;
 mod checkout;
 mod codeowners;
 mod glob;
@@ -51,9 +52,11 @@ async fn main() -> Result<()> {
         kick: Default::default(),
         viewers: tokio::sync::watch::channel(0).0,
         synced_at: Default::default(),
+        claude: Default::default(),
     });
     app.rebuild_items()?;
     tokio::spawn(app.clone().sync_loop());
+    tokio::spawn(app.clone().claude_loop());
     let listener = tokio::net::TcpListener::bind(addr).await?;
     tracing::info!("listening on http://{}", args.listen);
     axum::serve(listener, web::router(app, addr.port())).await?;

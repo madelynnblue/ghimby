@@ -59,6 +59,8 @@ pub struct App {
     /// Inbox tabs open and visible; background syncing waits for one.
     pub viewers: watch::Sender<usize>,
     pub synced_at: AtomicI64,
+    /// Open Claude desktop sessions, re-read every few seconds while an inbox tab is visible.
+    pub claude: RwLock<Arc<Vec<crate::claude::Session>>>,
 }
 
 /// Without a visible inbox tab, sync only this often, so auto-update and checkout cleanup still run.
@@ -293,6 +295,53 @@ impl App {
         }
         self.viewers.send_modify(|n| *n += 1);
         Viewer(self.clone())
+    }
+
+    pub fn claude_sessions(&self) -> Arc<Vec<crate::claude::Session>> {
+        self.claude.read().unwrap().clone()
+    }
+
+    /// Re-reads the Claude app's session records, bumping the change counter if they differ.
+    pub fn claude_enabled(&self) -> bool {
+        self.store.setting("claude_section").is_ok_and(|v| v.trim() != "false")
+    }
+
+    pub fn rescan_claude(&self) {
+        let dir = self.store.setting("claude_sessions_dir").unwrap_or_default();
+        let mut sessions = match dir.trim() {
+            d if d.is_empty() || !self.claude_enabled() => vec![],
+            d => crate::claude::scan(&checkout::expand_home(d)),
+        };
+        crate::claude::apply_dismissed(&mut sessions, &self.store.claude_dismissed().unwrap_or_default());
+        // An empty scan may be a transient read failure; keep dismissals until sessions show up.
+        if !sessions.is_empty() {
+            let open: Vec<&str> = sessions.iter().map(|s| s.id.as_str()).collect();
+            if let Err(e) = self.store.prune_claude_dismissed(&open) {
+                tracing::warn!("pruning Claude dismissals: {e:#}");
+            }
+        }
+        let mut cur = self.claude.write().unwrap();
+        if **cur != sessions {
+            *cur = Arc::new(sessions);
+            self.changes.bump();
+        }
+    }
+
+    /// The files are local and small, so polling is cheap; it pauses with no inbox tab visible.
+    pub async fn claude_loop(self: Arc<Self>) {
+        let mut viewers = self.viewers.subscribe();
+        loop {
+            self.rescan_claude();
+            tokio::select! {
+                _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+                _ = viewers.changed() => {}
+            }
+            while *viewers.borrow_and_update() == 0 {
+                if viewers.changed().await.is_err() {
+                    return;
+                }
+            }
+        }
     }
 
     pub async fn sync_loop(self: Arc<Self>) {

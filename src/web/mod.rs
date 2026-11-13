@@ -16,6 +16,7 @@ use serde::Deserialize;
 
 use crate::app::App;
 use crate::checkout::{self, key};
+use crate::claude::Session;
 use crate::store::Checkout;
 use crate::item::{Item, Value};
 use crate::rules::{self, Action, Compiled, Decision, FUNCTIONS};
@@ -42,6 +43,7 @@ pub fn router(app: Arc<App>, port: u16) -> Router {
         .route("/item/{id}/open", post(open_item))
         .route("/item/{id}/ignore", post(ignore_item))
         .route("/checkouts/remove", post(remove_checkout))
+        .route("/claude/dismiss", post(dismiss_claude))
         .route("/pr/{owner}/{repo}/{number}", get(pr::show))
         .route("/pr/{owner}/{repo}/{number}/refresh", post(pr::refresh))
         .route("/pr/{owner}/{repo}/{number}/approve", post(pr::approve))
@@ -129,24 +131,81 @@ mod tests {
     }
 }
 
-/// Checkout records and in-progress jobs, keyed by "owner/repo#N".
+/// Checkout records, in-progress jobs and Claude sessions, keyed by "owner/repo#N".
 struct Local {
     checkouts: HashMap<String, Checkout>,
     running: HashMap<String, String>,
+    claude: HashMap<String, Vec<Session>>,
 }
 
 impl Local {
     fn load(app: &App) -> Local {
-        Local {
-            checkouts: app
-                .store
-                .checkouts()
-                .unwrap_or_default()
-                .into_iter()
-                .map(|c| (key(&c.repo, c.number), c))
-                .collect(),
-            running: app.checkouts.running.lock().unwrap().clone(),
+        let checkouts: HashMap<String, Checkout> =
+            app.store.checkouts().unwrap_or_default().into_iter().map(|c| (key(&c.repo, c.number), c)).collect();
+        // A session belongs to a PR the app linked it to, or whose ghimby checkout it runs in.
+        let mut claude: HashMap<String, Vec<Session>> = HashMap::new();
+        for s in app.claude_sessions().iter() {
+            let in_checkout = checkouts.iter().filter(|(_, c)| !c.path.is_empty() && std::path::Path::new(&s.cwd).starts_with(&c.path)).map(|(k, _)| k);
+            let mut keys: Vec<&String> = s.prs.iter().chain(in_checkout).collect();
+            keys.sort();
+            keys.dedup();
+            for k in keys {
+                claude.entry(k.clone()).or_default().push(s.clone());
+            }
         }
+        Local { checkouts, running: app.checkouts.running.lock().unwrap().clone(), claude }
+    }
+}
+
+/// Links a PR row to its Claude sessions; a dot marks one that finished since you last opened it.
+fn claude_badges(it: &Item, local: &Local) -> Markup {
+    let Some(k) = crate::prpage::item_key(it) else { return html! {} };
+    html! {
+        @for s in local.claude.get(&k).into_iter().flatten() {
+            a.tag href=(s.link()) title=(format!("Open Claude session: {}", s.title)) { @if s.unseen { "● " } "Claude" }
+        }
+    }
+}
+
+/// Sessions whose last turn ended after you last opened them.
+fn claude_section(app: &App, now: i64) -> Markup {
+    if !app.claude_enabled() || app.store.setting("claude_sessions_dir").unwrap_or_default().trim().is_empty() {
+        return html! {};
+    }
+    let all = app.claude_sessions();
+    let unseen: Vec<&Session> = all.iter().filter(|s| s.unseen).collect();
+    html! {
+        h2 title="Claude desktop sessions whose last turn ended after you last opened them" {
+            "Claude " span.muted { "(" (unseen.len()) " of " (all.len()) " open)" }
+        }
+        @if !unseen.is_empty() {
+            table {
+                tr { th { "Session" } th { "Project" } th { "Status" } th { "Finished" } th { "" } }
+                @for s in unseen {
+                    tr {
+                        td { a href=(s.link()) { (s.title) } }
+                        td.nowrap.muted title=(s.cwd) { (s.project()) }
+                        td { @if !s.status.is_empty() { span.tag class=[status_class(&s.status)] { (s.status.replace('_', " ")) } } (s.detail) }
+                        td.nowrap.muted { (ago(now - s.finished_at / 1000)) }
+                        td {
+                            form method="post" action="/claude/dismiss" style="display:inline" {
+                                input type="hidden" name="id" value=(s.id);
+                                input type="hidden" name="finished_at" value=(s.finished_at);
+                                button title="Hide until this session finishes another turn. The app's own sidebar dot stays." { "Dismiss" }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn status_class(status: &str) -> Option<&'static str> {
+    match status {
+        "completed" | "review_ready" => Some("good"),
+        "blocked" | "failed" => Some("bad"),
+        _ => None,
     }
 }
 
@@ -372,6 +431,7 @@ fn item_rows(items: &[(&Item, Decision)], limit: usize, now: i64, local: &Local)
                         }
                         " "
                         (review_badge(it))
+                        (claude_badges(it, local))
                         @for t in &d.tags { span.tag { (t) } }
                         @if !d.errors.is_empty() { span.tag.bad title=(d.errors.join("\n")) { "rule error" } }
                     }
@@ -446,6 +506,7 @@ async fn inbox(State(app): S) -> Markup {
             (status_bar(&app))
             @if let Err(m) = &compiled { (m) }
             @if errored > 0 { div.card.bad { (errored) " item(s) hit rule errors; hover the \"rule error\" tag for details." } }
+            (claude_section(&app, now))
             h2 { "Shown " span.muted { "(" (shown.len()) ")" } }
             (item_rows(&shown, usize::MAX, now, &local))
             h2 { "Hidden " span.muted { "(" (hidden.iter().map(|(_, v)| v.len()).sum::<usize>()) ")" } }
@@ -889,6 +950,10 @@ async fn settings_page(State(app): S) -> Markup {
                                 @if s.key == "github_token" {
                                     input type="password" name=(s.key) value="" placeholder=(if v.is_empty() { "not set" } else { "set (leave empty to keep)" }) size="40";
                                     " " label { input type="checkbox" name="clear_token"; " clear" }
+                                } @else if s.is_bool() {
+                                    // Unchecked boxes aren't submitted, so the hidden false comes first and a checked true wins.
+                                    input type="hidden" name=(s.key) value="false";
+                                    input type="checkbox" name=(s.key) value="true" checked[v.trim() != "false"];
                                 } @else if s.multiline {
                                     textarea name=(s.key) rows="3" style="min-height:0" { (v) }
                                 } @else {
@@ -1001,6 +1066,24 @@ async fn ignore_item(State(app): S, Path(id): Path<String>, Form(f): Form<Ignore
 }
 
 #[derive(Deserialize)]
+struct DismissForm {
+    id: String,
+    /// The turn end the button was rendered for, so a newer turn still shows.
+    finished_at: i64,
+}
+
+async fn dismiss_claude(State(app): S, Form(f): Form<DismissForm>) -> Response {
+    if !f.id.starts_with("local_") {
+        return (axum::http::StatusCode::BAD_REQUEST, "not a session id").into_response();
+    }
+    if let Err(e) = app.store.dismiss_claude(&f.id, f.finished_at) {
+        return (axum::http::StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response();
+    }
+    app.rescan_claude();
+    Redirect::to("/").into_response()
+}
+
+#[derive(Deserialize)]
 struct RemoveForm {
     repo: String,
     number: i64,
@@ -1042,6 +1125,7 @@ async fn settings_save(State(app): S, Form(fields): Form<Vec<(String, String)>>)
     if clear {
         let _ = app.store.set_setting("github_token", "");
     }
+    app.rescan_claude();
     app.kick.notify_one();
     Redirect::to("/settings").into_response()
 }
