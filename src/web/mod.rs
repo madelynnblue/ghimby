@@ -19,7 +19,7 @@ use crate::checkout::{self, key};
 use crate::store::Checkout;
 use crate::item::{Item, Value};
 use crate::rules::{self, Action, Compiled, Decision, FUNCTIONS};
-use crate::store::{SETTINGS, now};
+use crate::store::{Mark, SETTINGS, now};
 
 mod pr;
 
@@ -189,18 +189,32 @@ fn review_badge(it: &Item) -> Markup {
     }
 }
 
-/// Ignoring returns to the inbox; unignoring returns to `back`, a local path.
+/// Dismiss and Ignore buttons, or the one undo button when either is in force.
+/// Marking returns to the inbox; clearing returns to `back`, a local path.
 fn ignore_button(it: &Item, back: &str) -> Markup {
-    let ignored = matches!(it.get("ignored"), Value::Bool(true));
+    let on = |f| matches!(it.get(f), Value::Bool(true));
+    let action = format!("/item/{}/ignore", it.id);
+    let clear = |label: &str, title: &str| html! {
+        form method="post" action=(action) style="display:inline" {
+            input type="hidden" name="back" value=(back);
+            button title=(title) { (label) }
+        }
+    };
+    let mark = |kind: &str, label: &str, title: &str| html! {
+        form method="post" action=(action) style="display:inline" {
+            input type="hidden" name="mark" value=(kind);
+            button title=(title) { (label) }
+        }
+    };
     html! {
-        form method="post" action=(format!("/item/{}/ignore", it.id)) style="display:inline" {
-            @if ignored {
-                input type="hidden" name="back" value=(back);
-                input type="hidden" name="undo" value="1";
-                button title="Stop setting the ignored field on this item" { "Unignore" }
-            } @else {
-                button title="Set the ignored field on this item so a rule can hide it" { "Ignore" }
-            }
+        @if on("ignored") {
+            (clear("Unignore", "Stop setting the ignored field on this item"))
+        } @else if on("dismissed") {
+            (clear("Undismiss", "Stop setting the dismissed field on this item"))
+        } @else {
+            (mark("dismiss", "Dismiss", "Set the dismissed field until another human comments, reviews or pushes"))
+            " "
+            (mark("ignore", "Ignore", "Set the ignored field until a human mentions you, requests your review or assigns you"))
         }
     }
 }
@@ -366,7 +380,7 @@ fn item_rows(items: &[(&Item, Decision)], limit: usize, now: i64, local: &Local)
                     td.nowrap.muted title=(format!("GitHub reason: {}", str_field(it, "reason"))) { (d.rule) }
                     td.nowrap.muted data-v=(updated(it)) { a href=(format!("/item/{}", it.id)) title="Why?" { (ago(now - updated(it))) } }
                     td style="max-width:220px" data-v=(local_sort(it, local)) { (local_cell(it, local)) }
-                    td { (ignore_button(it, "/")) }
+                    td.nowrap { (ignore_button(it, "/")) }
                 }
             }
         }
@@ -960,7 +974,8 @@ async fn open_item(State(app): S, Path(id): Path<String>) -> Response {
 
 #[derive(Deserialize)]
 struct IgnoreForm {
-    undo: Option<String>,
+    /// "ignore" or "dismiss"; absent clears the mark.
+    mark: Option<String>,
     back: Option<String>,
 }
 
@@ -969,7 +984,13 @@ async fn ignore_item(State(app): S, Path(id): Path<String>, Form(f): Form<Ignore
     let Some(it) = items.iter().find(|it| it.id == id) else {
         return (axum::http::StatusCode::NOT_FOUND, "no such item").into_response();
     };
-    match app.set_ignored(&it.url, &it.label, f.undo.is_none()) {
+    let mark = match f.mark.as_deref() {
+        None => None,
+        Some("ignore") => Some(Mark::Ignore),
+        Some("dismiss") => Some(Mark::Dismiss),
+        Some(_) => return (axum::http::StatusCode::BAD_REQUEST, "bad mark").into_response(),
+    };
+    match app.set_mark(&it.url, &it.label, mark) {
         Ok(()) => {
             // Only same-site paths, so the form can't redirect elsewhere.
             let back = f.back.filter(|b| b.starts_with('/') && !b.starts_with("//"));

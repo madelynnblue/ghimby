@@ -17,13 +17,35 @@ use crate::rules::{self, Compiled, FieldDoc, Schema};
 use crate::source::{Source, Status};
 use crate::prpage::{self, PrPage};
 use crate::source::set_message;
-use crate::store::{Store, now};
+use crate::store::{Mark, Store, now};
 
 /// Fields the app sets on every item, whatever its source.
-const APP_FIELDS: &[FieldDoc] = &[FieldDoc {
-    name: "ignored",
-    help: "You clicked Ignore on this item in the inbox",
-}];
+const APP_FIELDS: &[FieldDoc] = &[
+    FieldDoc {
+        name: "ignored",
+        help: "You clicked Ignore, and no human has named you since (mention, review request, assignment)",
+    },
+    FieldDoc {
+        name: "dismissed",
+        help: "You clicked Dismiss, and no other human has commented, reviewed or pushed since",
+    },
+];
+
+/// Sets `ignored` and `dismissed` from the item's mark, if it's still in force.
+fn apply_mark(it: &mut Item, mark: Option<&(Mark, i64)>) {
+    let after = |field: &str, at: i64| matches!(it.get(field), Value::Time(t) if *t > at);
+    let (ignored, dismissed) = match mark {
+        Some(&(Mark::Ignore, at)) => (!after("last_named_me", at), false),
+        // Items without PR or issue details only have the notification time to go on.
+        Some(&(Mark::Dismiss, at)) => match it.get("last_activity") {
+            Value::Null => (false, !after("updated", at)),
+            _ => (false, !after("last_others_activity", at)),
+        },
+        None => (false, false),
+    };
+    it.set("ignored", Value::Bool(ignored));
+    it.set("dismissed", Value::Bool(dismissed));
+}
 
 pub struct App {
     pub store: Store,
@@ -74,9 +96,9 @@ impl App {
         for src in &self.sources {
             all.extend(src.items()?);
         }
-        let ignored = self.store.ignored()?;
+        let marks = self.store.marks()?;
         for it in &mut all {
-            it.set("ignored", Value::Bool(ignored.contains(&it.url)));
+            apply_mark(it, marks.get(&it.url));
         }
         let mut items = self.items.write().unwrap();
         if **items != all {
@@ -86,13 +108,14 @@ impl App {
         Ok(())
     }
 
-    /// Records an Ignore click and updates items in place, avoiding a full rebuild.
-    pub fn set_ignored(&self, url: &str, label: &str, ignored: bool) -> Result<()> {
-        self.store.set_ignored(url, label, ignored)?;
+    /// Records an Ignore or Dismiss click and updates items in place, avoiding a full rebuild.
+    pub fn set_mark(&self, url: &str, label: &str, mark: Option<Mark>) -> Result<()> {
+        self.store.set_mark(url, label, mark)?;
+        let marks = self.store.marks()?;
         let mut items = self.items.write().unwrap();
         let mut next = (**items).clone();
         for it in next.iter_mut().filter(|it| it.url == url) {
-            it.set("ignored", Value::Bool(ignored));
+            apply_mark(it, marks.get(url));
         }
         *items = Arc::new(next);
         self.changes.bump();
@@ -291,6 +314,53 @@ impl App {
                     _ = viewers.changed() => {}
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn item(fields: &[(&str, Value)]) -> Item {
+        let mut it = Item { id: "1".into(), url: "u".into(), title: "t".into(), label: "l".into(), fields: Default::default() };
+        for (k, v) in fields {
+            it.set(k, v.clone());
+        }
+        it
+    }
+
+    fn marked(it: &mut Item, m: Option<(Mark, i64)>) -> (bool, bool) {
+        apply_mark(it, m.as_ref());
+        (it.get("ignored") == &Value::Bool(true), it.get("dismissed") == &Value::Bool(true))
+    }
+
+    #[test]
+    fn marks() {
+        let pr = |others: i64, named: i64| item(&[
+            ("last_activity", Value::Time(500)),
+            ("last_others_activity", Value::Time(others)),
+            ("last_named_me", Value::Time(named)),
+        ]);
+        assert_eq!(marked(&mut pr(200, 50), None), (false, false));
+        // Others acting doesn't lift an ignore; being named does.
+        assert_eq!(marked(&mut pr(200, 50), Some((Mark::Ignore, 100))), (true, false));
+        assert_eq!(marked(&mut pr(200, 150), Some((Mark::Ignore, 100))), (false, false));
+        assert_eq!(marked(&mut pr(50, 50), Some((Mark::Dismiss, 100))), (false, true));
+        assert_eq!(marked(&mut pr(200, 50), Some((Mark::Dismiss, 100))), (false, false));
+        // No subject details: dismiss falls back to the notification time.
+        let mut rel = item(&[("updated", Value::Time(200))]);
+        assert_eq!(marked(&mut rel, Some((Mark::Dismiss, 100))), (false, false));
+        assert_eq!(marked(&mut rel, Some((Mark::Dismiss, 300))), (false, true));
+    }
+
+    #[test]
+    fn default_rules_compile() {
+        let mut s = rules::Schema::default();
+        s.extend(APP_FIELDS);
+        s.extend(crate::source::github::FIELDS);
+        if let Err(errs) = rules::compile(crate::store::DEFAULT_RULES, &s) {
+            panic!("{errs:?}");
         }
     }
 }

@@ -59,6 +59,14 @@ pub const FIELDS: &[FieldDoc] = &[
         name: "new_since_my_activity",
         help: "On a PR you opened: another human commented, reviewed or pushed after your latest commit, push, comment or review",
     },
+    FieldDoc {
+        name: "last_others_activity",
+        help: "Time another human last commented, reviewed or pushed (unset if never)",
+    },
+    FieldDoc {
+        name: "last_named_me",
+        help: "Time a human last @-mentioned you in a comment or review, requested your review by name, or assigned you (unset if never)",
+    },
     FieldDoc { name: "codeowners", help: "Per changed file, the owners of its last-matching CODEOWNERS line. Use owned_by()." },
 ];
 
@@ -595,6 +603,50 @@ fn review_activity(pr: &J, me: &str, my_teams: &[String]) -> (bool, bool) {
 
 /// Whether another human's latest commit, push, comment or review is newer than yours.
 fn others_after_me(pr: &J, me: &str) -> bool {
+    let (mine, theirs) = activity_times(pr, me);
+    theirs > mine
+}
+
+/// Whether `body` @-mentions `me`, ignoring quoted lines so a reply quoting an old mention doesn't count.
+fn mentions(body: &str, me: &str) -> bool {
+    let word = |c: char| c.is_ascii_alphanumeric() || c == '-';
+    body.lines().filter(|l| !l.trim_start().starts_with('>')).any(|line| {
+        let lower = line.to_lowercase();
+        lower.match_indices(&format!("@{me}")).any(|(i, m)| {
+            !lower[..i].ends_with(word) && !lower[i + m.len()..].starts_with(word)
+        })
+    })
+}
+
+/// When a human last named `me`: an @-mention in a comment or review, a review request, or an assignment.
+fn last_named_me(s: &J, me: &str) -> Option<i64> {
+    let human = |actor: &J| !is_bot(actor) && login(actor).is_some_and(|l| l != me);
+    let said = |author: &J, body: &J| human(author) && mentions(body.as_str().unwrap_or(""), me);
+    s["timelineItems"]["nodes"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|ev| match ev["__typename"].as_str().unwrap_or("") {
+            "IssueComment" if said(&ev["author"], &ev["body"]) => jts(&ev["createdAt"]),
+            "PullRequestReview" => {
+                let inline = ev["comments"]["nodes"].as_array().into_iter().flatten();
+                let named = said(&ev["author"], &ev["body"])
+                    || inline.into_iter().any(|c| said(&ev["author"], &c["body"]));
+                named.then(|| jts(&ev["submittedAt"])).flatten()
+            }
+            "ReviewRequestedEvent" if login(&ev["requestedReviewer"]).as_deref() == Some(me) => {
+                jts(&ev["createdAt"])
+            }
+            "AssignedEvent" if login(&ev["assignee"]).as_deref() == Some(me) && human(&ev["actor"]) => {
+                jts(&ev["createdAt"])
+            }
+            _ => None,
+        })
+        .max()
+}
+
+/// Latest commit, push, comment or review time by `me`, and by any other human.
+fn activity_times(pr: &J, me: &str) -> (i64, i64) {
     let (mut mine, mut theirs) = (0, 0);
     for ev in pr["timelineItems"]["nodes"].as_array().into_iter().flatten() {
         let (who, at) = match ev["__typename"].as_str().unwrap_or("") {
@@ -611,7 +663,7 @@ fn others_after_me(pr: &J, me: &str) -> bool {
             theirs = theirs.max(t);
         }
     }
-    theirs > mine
+    (mine, theirs)
 }
 
 fn strs_at(v: &J, list: &str, field: &str) -> Vec<String> {
@@ -726,6 +778,13 @@ impl Source for GitHub {
                     it.set("last_activity", Value::Time(t));
                 }
                 it.set("labels", Value::strs(strs_at(s, "labels", "name")));
+                let (_, theirs) = activity_times(s, &me);
+                if theirs > 0 {
+                    it.set("last_others_activity", Value::Time(theirs));
+                }
+                if let Some(t) = last_named_me(s, &me) {
+                    it.set("last_named_me", Value::Time(t));
+                }
                 if s["__typename"] == "PullRequest" {
                     it.set("draft", Value::Bool(s["isDraft"].as_bool().unwrap_or(false)));
                     for (f, k) in [
@@ -778,6 +837,13 @@ __typename
   issueState: state url createdAt updatedAt
   author { login }
   labels(first: 30) { nodes { name } }
+  timelineItems(last: 100, itemTypes: [ISSUE_COMMENT, ASSIGNED_EVENT]) {
+    nodes {
+      __typename
+      ... on IssueComment { createdAt body author { __typename login } }
+      ... on AssignedEvent { createdAt actor { __typename login } assignee { ... on User { login } } }
+    }
+  }
 }
 ... on PullRequest {
   prState: state url createdAt updatedAt isDraft additions deletions changedFiles
@@ -788,13 +854,14 @@ __typename
   reviewDecision
   latestOpinionatedReviews(first: 30) { nodes { state author { login } } }
   myReviews: reviews(last: 5, author: $ME) { nodes { submittedAt } }
-  timelineItems(last: 100, itemTypes: [PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT, ISSUE_COMMENT, PULL_REQUEST_REVIEW, REVIEW_REQUESTED_EVENT]) {
+  timelineItems(last: 100, itemTypes: [PULL_REQUEST_COMMIT, HEAD_REF_FORCE_PUSHED_EVENT, ISSUE_COMMENT, PULL_REQUEST_REVIEW, REVIEW_REQUESTED_EVENT, ASSIGNED_EVENT]) {
     nodes {
       __typename
       ... on PullRequestCommit { commit { committedDate author { user { login } } committer { user { login } } } }
       ... on HeadRefForcePushedEvent { createdAt actor { __typename login } }
-      ... on IssueComment { createdAt author { __typename login } }
-      ... on PullRequestReview { submittedAt author { __typename login } }
+      ... on IssueComment { createdAt body author { __typename login } }
+      ... on PullRequestReview { submittedAt body author { __typename login } comments(first: 20) { nodes { body } } }
+      ... on AssignedEvent { createdAt actor { __typename login } assignee { ... on User { login } } }
       ... on ReviewRequestedEvent { createdAt requestedReviewer { __typename ... on User { login } ... on Team { combinedSlug } } }
     }
   }
@@ -875,6 +942,34 @@ mod tests {
         assert!(!after(vec![commit("me", "web-flow")]));
         assert!(after(vec![commit("bob", "web-flow")]));
         assert!(after(vec![commit("me", "bob")]));
+    }
+
+    #[test]
+    fn mention() {
+        assert!(mentions("cc @Me please", "me"));
+        assert!(mentions("@me", "me"));
+        assert!(mentions("thoughts, @me?", "me"));
+        assert!(!mentions("@meg", "me"));
+        assert!(!mentions("@me-bot", "me"));
+        assert!(!mentions("foo@me.com", "me"));
+        assert!(!mentions("> @me said\nagreed", "me"));
+    }
+
+    #[test]
+    fn named_me() {
+        let at = |evs: Vec<J>| last_named_me(&json!({ "timelineItems": { "nodes": evs } }), "me");
+        let c = |who: &str, body: &str, at: &str| json!({ "__typename": "IssueComment", "createdAt": at, "body": body, "author": { "login": who } });
+        assert_eq!(at(vec![c("bob", "no mention", "2026-11-02T00:00:00Z")]), None);
+        assert_eq!(at(vec![c("me", "@me", "2026-11-02T00:00:00Z")]), None);
+        assert_eq!(at(vec![json!({ "__typename": "IssueComment", "createdAt": "2026-11-02T00:00:00Z", "body": "@me", "author": { "__typename": "Bot", "login": "ci" } })]), None);
+        let t = ts("2026-11-03T00:00:00Z");
+        assert_eq!(at(vec![c("bob", "@me", "2026-11-02T00:00:00Z"), c("bob", "hey @me", "2026-11-03T00:00:00Z")]), t);
+        assert_eq!(at(vec![json!({ "__typename": "PullRequestReview", "submittedAt": "2026-11-03T00:00:00Z", "body": "",
+            "author": { "login": "bob" }, "comments": { "nodes": [{ "body": "@me look" }] } })]), t);
+        assert_eq!(at(vec![json!({ "__typename": "ReviewRequestedEvent", "createdAt": "2026-11-03T00:00:00Z", "requestedReviewer": { "login": "me" } })]), t);
+        assert_eq!(at(vec![json!({ "__typename": "ReviewRequestedEvent", "createdAt": "2026-11-03T00:00:00Z", "requestedReviewer": { "combinedSlug": "org/team" } })]), None);
+        assert_eq!(at(vec![json!({ "__typename": "AssignedEvent", "createdAt": "2026-11-03T00:00:00Z", "actor": { "login": "bob" }, "assignee": { "login": "me" } })]), t);
+        assert_eq!(at(vec![json!({ "__typename": "AssignedEvent", "createdAt": "2026-11-03T00:00:00Z", "actor": { "login": "me" }, "assignee": { "login": "me" } })]), None);
     }
 
     #[test]

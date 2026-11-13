@@ -9,6 +9,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 pub const DEFAULT_RULES: &str = r#"# Rules run top to bottom. show/hide stop at the first match; tag keeps going.
 hide "finished" if state != "open"
 hide "ignored" if ignored
+hide "dismissed" if dismissed
 hide "bots" if author in ["dependabot", "renovate"]
 hide "already reviewed" if reviewed_by_me and not new_since_my_review
 hide "draft" if draft
@@ -37,7 +38,30 @@ CREATE TABLE pr_pages (key TEXT PRIMARY KEY, json TEXT NOT NULL, updated_at INTE
 "#, r#"
 -- The subject query gained updatedAt and review decisions; re-fetch cached subjects.
 UPDATE subjects SET fetched_at = 0;
+"#, r#"
+-- Ignore stays until you're named again; dismiss lasts until anyone else acts.
+ALTER TABLE ignored ADD COLUMN kind TEXT NOT NULL DEFAULT 'ignore';
+-- The subject query gained comment bodies and assignments; re-fetch cached subjects.
+UPDATE subjects SET fetched_at = 0;
 "#];
+
+/// How an inbox row was set aside.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mark {
+    /// Until a human names you after it.
+    Ignore,
+    /// Until another human acts on it after it.
+    Dismiss,
+}
+
+impl Mark {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Mark::Ignore => "ignore",
+            Mark::Dismiss => "dismiss",
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct Store {
@@ -233,25 +257,27 @@ impl Store {
         Ok(())
     }
 
-    /// URLs of items the user ignored.
-    pub fn ignored(&self) -> Result<std::collections::HashSet<String>> {
+    /// Ignored or dismissed items: URL to (kind, when).
+    pub fn marks(&self) -> Result<std::collections::HashMap<String, (Mark, i64)>> {
         self.with(|c| {
-            c.prepare("SELECT url FROM ignored")?
-                .query_map([], |r| r.get(0))?
+            c.prepare("SELECT url, kind, created_at FROM ignored")?
+                .query_map([], |r| {
+                    let kind: String = r.get(1)?;
+                    let mark = if kind == "dismiss" { Mark::Dismiss } else { Mark::Ignore };
+                    Ok((r.get(0)?, (mark, r.get(2)?)))
+                })?
                 .collect()
         })
     }
 
-    pub fn set_ignored(&self, url: &str, label: &str, ignored: bool) -> Result<()> {
-        self.with(|c| {
-            if ignored {
-                c.execute(
-                    "INSERT OR REPLACE INTO ignored (url, label, created_at) VALUES (?, ?, ?)",
-                    params![url, label, now()],
-                )
-            } else {
-                c.execute("DELETE FROM ignored WHERE url = ?", [url])
-            }
+    /// Ignores or dismisses an item as of now, or clears it with `None`.
+    pub fn set_mark(&self, url: &str, label: &str, mark: Option<Mark>) -> Result<()> {
+        self.with(|c| match mark {
+            Some(m) => c.execute(
+                "INSERT OR REPLACE INTO ignored (url, label, created_at, kind) VALUES (?, ?, ?, ?)",
+                params![url, label, now(), m.as_str()],
+            ),
+            None => c.execute("DELETE FROM ignored WHERE url = ?", [url]),
         })?;
         Ok(())
     }

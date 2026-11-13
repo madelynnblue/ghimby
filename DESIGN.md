@@ -23,6 +23,7 @@ bottom. `show`/`hide` stop at the first match; `tag` adds a label and keeps goin
 ```
 hide "finished"         if state != "open"
 hide "ignored"          if ignored
+hide "dismissed"        if dismissed
 hide "bots"             if author in ["dependabot", "acme-ci"]
 hide "already reviewed" if reviewed_by_me and not new_since_my_review
 hide "draft"           if draft
@@ -38,10 +39,10 @@ Hidden items stay viewable in the app with the rule that hid them.
 | field | type |
 |---|---|
 | `repo`, `author`, `title`, `reason`, `state`, `review_decision` | string |
-| `draft`, `ignored`, `mine`, `requested_for_me`, `reviewed_by_me`, `new_since_my_review`, `new_since_my_activity` | bool |
+| `draft`, `ignored`, `dismissed`, `mine`, `requested_for_me`, `reviewed_by_me`, `new_since_my_review`, `new_since_my_activity` | bool |
 | `labels`, `paths`, `requested_teams`, `requested_users`, `approved_by`, `changes_requested_by` | list of strings |
 | `changed_files`, `additions`, `deletions` | int |
-| `updated`, `created`, `last_activity` | timestamp (use `age(updated) > 14d`) |
+| `updated`, `created`, `last_activity`, `last_others_activity`, `last_named_me` | timestamp (use `age(updated) > 14d`) |
 | `codeowners` | per changed file, the owners of its last-matching CODEOWNERS line |
 
 `new_since_my_review` is true when, after your latest review, there was a new commit or force-push,
@@ -51,8 +52,15 @@ a comment or review by another human, or a review re-request for you or one of y
 `new_since_my_review`: on your own PR, another human's latest commit, push, comment or review is newer
 than yours, so it's your turn.
 
-`ignored` is set by the Ignore button on an inbox row (keyed by the item's URL, so it survives
-re-syncs). Ignoring only sets the field; the `hide "ignored"` rule is what hides it.
+Each inbox row has Dismiss and Ignore buttons (keyed by the item's URL, so they survive re-syncs).
+They only set fields; the `hide` rules are what hide the item.
+
+- `dismissed` lasts until another human comments, reviews or pushes (`last_others_activity` moves
+  past the click). Items without PR or issue details use the notification's `updated` instead.
+- `ignored` lasts until a human names you: an @-mention in a comment or review (quoted lines don't
+  count), a review request for you by name, or assigning you (`last_named_me` moves past the click).
+
+Either way the row stays marked, so clicking again restarts it from now.
 
 `review_decision` is `approved`, `changes_requested`, `review_required` or `none`: GitHub's
 `reviewDecision` where branch protection requires reviews, otherwise derived from each reviewer's
@@ -105,7 +113,7 @@ rules engine applies.
 ### Pages
 
 - **Inbox**: shown items (with tags), then a collapsed hidden section grouped by the rule that hid each.
-  Each row has an Ignore/Unignore button. The page stays current on its own: see Live updates.
+  Each row has Dismiss and Ignore buttons, or Undismiss/Unignore. The page stays current on its own: see Live updates.
 - **Rules**: textarea with parse errors inline, a form view of the same rules, and a dry-run showing
   which items would change bucket before saving.
 - **Settings**: token source, poll interval.
@@ -132,12 +140,12 @@ Syncing only matters while you're looking, so the inbox page drives it:
   right away.
 - While any stream is open, it syncs every `poll_secs` (default 5 min).
 - With none open, it syncs once a day, so auto-update and checkout cleanup still run.
-- The Sync button, Ignore and saving rules sync immediately, as before.
+- The Sync button, Dismiss, Ignore and saving rules sync immediately, as before.
 
 ## Live updates
 
 The server keeps a version counter, bumped when items actually change after a sync (compared, not
-just rebuilt), on Ignore, on rules save, when a checkout job starts, progresses or ends, and when a
+just rebuilt), on Dismiss or Ignore, on rules save, when a checkout job starts, progresses or ends, and when a
 sync's error or checkout cleanup changes. `/events` is a Server-Sent Events stream that sends the
 version on change and the sync status line when it changes.
 
