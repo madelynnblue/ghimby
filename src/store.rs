@@ -142,12 +142,6 @@ pub const SETTINGS: &[Setting] = &[
         multiline: false,
     },
     Setting {
-        key: "subject_refresh_secs",
-        default: "900",
-        help: "Re-fetch details of open PRs/issues older than this many seconds.",
-        multiline: false,
-    },
-    Setting {
         key: "codeowners_refresh_secs",
         default: "21600",
         help: "Re-fetch CODEOWNERS files older than this many seconds.",

@@ -67,11 +67,9 @@ Either way the row stays marked, so clicking again restarts it from now.
 latest approve or request-changes review (any request for changes wins). The inbox shows approved and
 changes-requested PRs as a badge next to the title, naming the reviewers on hover.
 
-PR details refresh when a newer notification arrives and every `subject_refresh_secs` for open PRs.
-Each sync also checks open drafts with a light state-and-draft query and re-fetches any marked ready
-for review, so it leaves the `draft` rule within one poll. After rules run, it also asks GitHub for
-each shown PR's `updatedAt` and re-fetches any that moved, catching changes that send you no
-notification, such as your own review. Your login and teams are re-fetched hourly or when the token
+PR details refresh when a newer notification arrives. Each sync also asks GitHub for every open
+PR's and issue's state, draft flag and `updatedAt` in light batched queries, and re-fetches only the
+ones that moved, catching changes that send you no notification, such as your own review. Your login and teams are re-fetched hourly or when the token
 changes.
 
 A comparison against a field the item doesn't have (e.g. `state` on a release notification) is false.

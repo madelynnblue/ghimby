@@ -75,7 +75,7 @@ pub struct GitHub {
     http: reqwest::Client,
 }
 
-struct PrFlags {
+struct SubjectFlags {
     state: String,
     draft: bool,
     updated: i64,
@@ -314,16 +314,14 @@ impl GitHub {
 
     async fn sync_subjects(&self, token: &str, status: &Status) -> Result<()> {
         let me = self.store.setting("github.login")?;
-        let refresh = self.store.setting_i64("subject_refresh_secs")?;
         let cached: HashMap<String, (J, i64)> = self
             .store
             .subjects()?
             .into_iter()
             .map(|(k, j, t)| (k, (serde_json::from_str(&j).unwrap_or(J::Null), t)))
             .collect();
-        let now = now();
         let mut want = Vec::new();
-        let mut drafts = Vec::new();
+        let mut open = Vec::new();
         let mut seen = HashSet::new();
         for n in self.store.notifications()? {
             let n: J = serde_json::from_str(&n)?;
@@ -334,29 +332,30 @@ impl GitHub {
                 continue;
             }
             let updated = jts(&n["updated_at"]).unwrap_or(0);
-            let stale = match cached.get(&r.key()) {
-                None => true,
-                Some((j, fetched)) => {
-                    if j["prState"] == "OPEN" && j["isDraft"] == true {
-                        drafts.push(r.clone());
+            match cached.get(&r.key()) {
+                Some((j, fetched)) if updated <= *fetched => {
+                    if j["prState"] == "OPEN" || j["issueState"] == "OPEN" {
+                        open.push(r);
                     }
-                    updated > *fetched
-                        || (j["prState"] == "OPEN" || j["issueState"] == "OPEN")
-                            && now - fetched > refresh
                 }
-            };
-            if stale {
-                want.push(r);
+                _ => want.push(r),
             }
         }
-        // Check drafts every sync with a light query so one marked ready leaves the draft rule promptly.
-        drafts.retain(|d| !want.contains(d));
-        if !drafts.is_empty() {
-            let prs: Vec<(String, i64)> = drafts.iter().map(|d| (format!("{}/{}", d.owner, d.repo), d.number as i64)).collect();
-            let flags = self.pr_flags(token, &prs).await?;
-            for (d, pr) in drafts.into_iter().zip(&prs) {
-                if flags.get(&format!("{}#{}", pr.0, pr.1)).is_none_or(|f| f.state != "OPEN" || !f.draft) {
-                    want.push(d);
+        // Open subjects can change without notifying you (e.g. your own review), so check their
+        // updatedAt with a light query and re-fetch only the ones that moved.
+        if !open.is_empty() {
+            let keys: Vec<(String, i64)> =
+                open.iter().map(|r| (format!("{}/{}", r.owner, r.repo), r.number as i64)).collect();
+            let flags = self.subject_flags(token, &keys).await?;
+            for (r, (repo, n)) in open.into_iter().zip(&keys) {
+                let j = &cached[&r.key()].0;
+                let moved = flags.get(&format!("{repo}#{n}")).is_none_or(|f| {
+                    f.updated > jts(&j["updatedAt"]).unwrap_or(0)
+                        || f.state != j["prState"].as_str().or(j["issueState"].as_str()).unwrap_or_default()
+                        || f.draft != (j["isDraft"] == true)
+                });
+                if moved {
+                    want.push(r);
                 }
             }
         }
@@ -459,43 +458,18 @@ impl GitHub {
             return Ok(HashMap::new());
         }
         let token = self.token().await?;
-        Ok(self.pr_flags(&token, prs).await?.into_iter().map(|(k, f)| (k, f.state)).collect())
+        Ok(self.subject_flags(&token, prs).await?.into_iter().map(|(k, f)| (k, f.state)).collect())
     }
 
-    /// Re-fetches details of PRs whose GitHub updatedAt is newer than `known`, which catches
-    /// changes that send no notification, such as your own review. Returns how many changed.
-    pub async fn refetch_changed(&self, prs: &[(String, i64, i64)]) -> Result<usize> {
-        if prs.is_empty() {
-            return Ok(0);
-        }
-        let token = self.token().await?;
-        let keys: Vec<(String, i64)> = prs.iter().map(|(r, n, _)| (r.clone(), *n)).collect();
-        let flags = self.pr_flags(&token, &keys).await?;
-        let changed: Vec<SubjectRef> = prs
-            .iter()
-            .filter(|(r, n, known)| flags.get(&format!("{r}#{n}")).is_some_and(|f| f.updated > *known))
-            .filter_map(|(r, n, _)| {
-                let (owner, repo) = r.split_once('/')?;
-                Some(SubjectRef { owner: owner.into(), repo: repo.into(), number: *n as u64 })
-            })
-            .collect();
-        let n = changed.len();
-        let me = self.store.setting("github.login")?;
-        for b in changed.chunks(SUBJECT_BATCH) {
-            self.fetch_subjects(&token, &me, b.to_vec()).await?;
-        }
-        Ok(n)
-    }
-
-    /// State, draft flag and updatedAt of each PR, keyed by "owner/repo#N".
-    async fn pr_flags(&self, token: &str, prs: &[(String, i64)]) -> Result<HashMap<String, PrFlags>> {
+    /// State, draft flag and updatedAt of each PR or issue, keyed by "owner/repo#N".
+    async fn subject_flags(&self, token: &str, prs: &[(String, i64)]) -> Result<HashMap<String, SubjectFlags>> {
         let mut out = HashMap::new();
         for chunk in prs.chunks(50) {
             let mut q = String::from("query {");
             for (i, (repo, n)) in chunk.iter().enumerate() {
                 let (o, r) = repo.split_once('/').unwrap_or((repo, ""));
                 q += &format!(
-                    " p{i}: repository(owner: {}, name: {}) {{ pullRequest(number: {n}) {{ state isDraft updatedAt }} }}",
+                    " p{i}: repository(owner: {}, name: {}) {{ issueOrPullRequest(number: {n}) {{ ... on PullRequest {{ prState: state isDraft updatedAt }} ... on Issue {{ issueState: state updatedAt }} }} }}",
                     serde_json::to_string(o)?,
                     serde_json::to_string(r)?,
                 );
@@ -503,9 +477,9 @@ impl GitHub {
             q.push('}');
             let body = self.graphql(token, &q).await?;
             for (i, (repo, n)) in chunk.iter().enumerate() {
-                let pr = &body["data"][format!("p{i}")]["pullRequest"];
-                if let Some(s) = pr["state"].as_str() {
-                    let f = PrFlags { state: s.to_string(), draft: pr["isDraft"] == true, updated: jts(&pr["updatedAt"]).unwrap_or(0) };
+                let pr = &body["data"][format!("p{i}")]["issueOrPullRequest"];
+                if let Some(s) = pr["prState"].as_str().or(pr["issueState"].as_str()) {
+                    let f = SubjectFlags { state: s.to_string(), draft: pr["isDraft"] == true, updated: jts(&pr["updatedAt"]).unwrap_or(0) };
                     out.insert(format!("{repo}#{n}"), f);
                 }
             }
