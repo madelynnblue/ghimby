@@ -38,12 +38,14 @@ CREATE TABLE pr_pages (key TEXT PRIMARY KEY, json TEXT NOT NULL, updated_at INTE
 "#, r#"
 -- The subject query gained updatedAt and review decisions; re-fetch cached subjects.
 UPDATE subjects SET fetched_at = 0;
-"#, r#"
--- Ignore stays until you're named again; dismiss lasts until anyone else acts.
+"#];
+
+/// Added by column check, not as a migration, since an unmerged branch already used the next number.
+const ADD_MARK_KIND: &str = r#"
 ALTER TABLE ignored ADD COLUMN kind TEXT NOT NULL DEFAULT 'ignore';
 -- The subject query gained comment bodies and assignments; re-fetch cached subjects.
 UPDATE subjects SET fetched_at = 0;
-"#];
+"#;
 
 /// How an inbox row was set aside.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -192,6 +194,14 @@ impl Store {
         for (i, m) in MIGRATIONS.iter().enumerate().skip(version as usize) {
             conn.execute_batch(m)?;
             conn.pragma_update(None, "user_version", (i + 1) as i64)?;
+        }
+        let has_kind: bool = conn.query_row(
+            "SELECT count(*) FROM pragma_table_info('ignored') WHERE name = 'kind'",
+            [],
+            |r| r.get::<_, i64>(0).map(|n| n > 0),
+        )?;
+        if !has_kind {
+            conn.execute_batch(ADD_MARK_KIND)?;
         }
         let store = Store {
             conn: Arc::new(Mutex::new(conn)),
