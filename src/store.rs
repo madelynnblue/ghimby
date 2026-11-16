@@ -13,7 +13,10 @@ hide "dismissed" if dismissed
 hide "bots" if author in ["dependabot", "renovate"]
 hide "already reviewed" if reviewed_by_me and not new_since_my_review
 hide "draft" if draft
-tag "my turn" if new_since_my_activity
+tag "new since my review" if new_since_my_review
+show "my turn" if new_since_my_activity or (mine and review_decision == "approved")
+hide "my PR, waiting on others" if mine
+hide "approved" if review_decision == "approved" and not requested_for_me
 default show
 "#;
 
