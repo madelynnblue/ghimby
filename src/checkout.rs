@@ -274,6 +274,7 @@ impl Checkouts {
 
         let prev = store.checkout(repo, number)?;
         let status = if is_worktree(&clone, &path).await? {
+            reattach(&path, &branch, prev.as_ref().map(|c| c.head_oid.as_str())).await?;
             let cur = git(&path, &["rev-parse", "HEAD"]).await?;
             if cur == new {
                 "up to date".to_string()
@@ -345,6 +346,20 @@ async fn is_worktree(clone: &Path, path: &Path) -> Result<bool> {
         .lines()
         .filter_map(|l| l.strip_prefix("worktree "))
         .any(|p| std::fs::canonicalize(p).is_ok_and(|p| p == want)))
+}
+
+/// Puts a detached worktree back on its branch so editors can link it to the PR. Leaves it
+/// detached when the branch holds commits that HEAD doesn't.
+async fn reattach(path: &Path, branch: &str, recorded: Option<&str>) -> Result<()> {
+    if git(path, &["symbolic-ref", "--quiet", "HEAD"]).await.is_ok() {
+        return Ok(());
+    }
+    let head = git(path, &["rev-parse", "HEAD"]).await?;
+    let tip = git(path, &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{branch}")]).await.ok();
+    if tip.as_deref().is_none_or(|t| t == head || Some(t) == recorded) {
+        git(path, &["checkout", "--quiet", "-B", branch]).await?;
+    }
+    Ok(())
 }
 
 /// Why the worktree can't be moved without losing something, if anything.
@@ -466,5 +481,34 @@ mod tests {
             assert_eq!(remote_to_repo(url).as_deref(), Some(want), "{url}");
         }
         assert_eq!(remote_to_repo("git@gitlab.com:o/r.git"), None);
+    }
+
+    #[tokio::test]
+    async fn reattach_detached() {
+        let dir = std::env::temp_dir().join(format!("ghimby-reattach-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let g = |args: &'static [&'static str]| {
+            let dir = dir.clone();
+            async move { git(&dir, args).await.unwrap() }
+        };
+        g(&["init", "--quiet", "-b", "b"]).await;
+        g(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "--allow-empty", "-m", "1"]).await;
+        let one = g(&["rev-parse", "HEAD"]).await;
+        g(&["checkout", "--quiet", "--detach"]).await;
+        g(&["-c", "user.name=t", "-c", "user.email=t@t", "commit", "--quiet", "--allow-empty", "-m", "2"]).await;
+        let two = g(&["rev-parse", "HEAD"]).await;
+
+        // The branch is at the recorded head, so it follows HEAD.
+        reattach(&dir, "b", Some(&one)).await.unwrap();
+        assert_eq!(g(&["symbolic-ref", "HEAD"]).await, "refs/heads/b");
+        assert_eq!(g(&["rev-parse", "b"]).await, two);
+
+        // The branch has a commit HEAD lacks, so it stays detached.
+        g(&["checkout", "--quiet", "--detach", "HEAD~1"]).await;
+        reattach(&dir, "b", Some(&one)).await.unwrap();
+        assert!(git(&dir, &["symbolic-ref", "--quiet", "HEAD"]).await.is_err());
+        assert_eq!(g(&["rev-parse", "b"]).await, two);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }
